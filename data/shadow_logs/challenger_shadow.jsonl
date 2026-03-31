@@ -53,3 +53,5 @@
 {"ts": "2026-03-31T19:18:44.291880+00:00", "match_id": 15525995, "champion_raw": 9.8777, "challenger_raw": 9.8777, "champion_conf": 0.6727, "challenger_conf": 0.7686, "line_val": 7.5, "is_over": true, "champion_only_mode": true}
 {"ts": "2026-03-31T19:18:48.306288+00:00", "match_id": 15526003, "champion_raw": 10.5684, "challenger_raw": 10.5684, "champion_conf": 0.7531, "challenger_conf": 0.7274, "line_val": 8.5, "is_over": true, "champion_only_mode": true}
 {"ts": "2026-03-31T19:18:52.398945+00:00", "match_id": 15526001, "champion_raw": 8.9727, "challenger_raw": 8.9727, "champion_conf": 0.5464, "challenger_conf": 0.7907, "line_val": 6.5, "is_over": true, "champion_only_mode": true}
+{"ts": "2026-03-31T19:44:35.946367+00:00", "match_id": 15526004, "champion_raw": 9.8897, "challenger_raw": 9.8897, "champion_conf": 0.6742, "challenger_conf": 0.7697, "line_val": 7.5, "is_over": true, "champion_only_mode": true}
+{"ts": "2026-03-31T19:44:42.849629+00:00", "match_id": 15525999, "champion_raw": 9.2926, "challenger_raw": 9.2926, "champion_conf": 0.5933, "challenger_conf": 0.7092, "line_val": 7.5, "is_over": true, "champion_only_mode": true}

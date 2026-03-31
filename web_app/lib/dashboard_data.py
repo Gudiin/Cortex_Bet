@@ -251,7 +251,7 @@ class DashboardDataProvider:
                 main_picks = [p for p in deduped_predictions
                               if p.get('category') in ('Main', 'Top7')]
                 alt_picks = [p for p in deduped_predictions
-                             if p.get('category') not in ('Main', 'Top7')]
+                             if p.get('category') not in ('Main', 'Top7', 'ScientificMeta')]
                 
                 # Fallback: if no explicit Main saved yet, use highest confidence overall
                 best_for_main = main_picks if main_picks else deduped_predictions
