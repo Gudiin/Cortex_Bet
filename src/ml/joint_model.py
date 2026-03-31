@@ -215,7 +215,10 @@ class JointCornersModel(BaseEstimator):
 
         lambdas_base = []
         for est in self._estimators:
-            pred = float(est.predict(X_arr)[0])
+            import warnings as _w
+            with _w.catch_warnings():
+                _w.filterwarnings("ignore", message=".*feature names.*", category=UserWarning)
+                pred = float(est.predict(X_arr)[0])
             lambdas_base.append(max(0.01, pred))  # garante λ > 0
 
         l_h1H, l_a1H, l_h2H, l_a2H = lambdas_base
@@ -234,6 +237,35 @@ class JointCornersModel(BaseEstimator):
             "ft_total": l_h1H + l_a1H + l_h2H + l_a2H,
         }
         return result
+
+    def predict_lambda_batch(self, X: pd.DataFrame) -> pd.DataFrame:
+        """
+        Prediz o vetor latente λ para TODAS as amostras de uma vez (vetorizado).
+
+        Returns:
+            DataFrame com colunas [home_1H, away_1H, home_2H, away_2H, home_ft, away_ft, ...]
+        """
+        if not self.is_fitted_:
+            raise RuntimeError("Modelo não treinado. Chame fit() primeiro.")
+
+        X_aligned = self._align_features(X)
+        X_arr = self.scaler.transform(X_aligned)
+
+        preds = {}
+        import warnings as _w
+        with _w.catch_warnings():
+            _w.filterwarnings("ignore", message=".*feature names.*", category=UserWarning)
+            for i, col in enumerate(JOINT_TARGET_DISPLAY):
+                raw = self._estimators[i].predict(X_arr)
+                preds[col] = np.maximum(0.01, raw)
+
+        df_out = pd.DataFrame(preds, index=X.index)
+        df_out["home_ft"] = df_out["home_1H"] + df_out["home_2H"]
+        df_out["away_ft"] = df_out["away_1H"] + df_out["away_2H"]
+        df_out["total_1H"] = df_out["home_1H"] + df_out["away_1H"]
+        df_out["total_2H"] = df_out["home_2H"] + df_out["away_2H"]
+        df_out["ft_total"] = df_out["home_1H"] + df_out["away_1H"] + df_out["home_2H"] + df_out["away_2H"]
+        return df_out
 
     def _align_features(self, X: pd.DataFrame) -> pd.DataFrame:
         """Alinha X ao conjunto de features vistas no treino."""

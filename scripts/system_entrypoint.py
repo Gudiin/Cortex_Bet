@@ -6,6 +6,7 @@ This module centralizes stack orchestration for API, scanner, and web frontend.
 from __future__ import annotations
 
 import os
+from pathlib import Path
 import socket
 import subprocess
 import sys
@@ -18,6 +19,7 @@ SCANNER_SCRIPT = "scripts/quick_scan.py"
 WEB_WORKDIR = "web_app"
 WEB_COMMAND = ["npm", "run", "dev"]
 SCANNER_PID_FILE = os.path.join(WEB_WORKDIR, ".scanner.pid")
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 def get_local_ip() -> str:
@@ -43,14 +45,20 @@ def start_stack_processes(python_executable: str) -> List[subprocess.Popen]:
     processes: List[subprocess.Popen] = []
 
     print("Starting API server on port 8000...")
-    api_process = subprocess.Popen([python_executable, API_SCRIPT])
+    api_process = subprocess.Popen(
+        [python_executable, "-m", "src.api.server"],
+        cwd=str(PROJECT_ROOT),
+    )
     processes.append(api_process)
     print(f"API PID: {api_process.pid}")
 
     time.sleep(5)
 
     print("Starting quick scanner...")
-    scanner_process = subprocess.Popen([python_executable, SCANNER_SCRIPT])
+    scanner_process = subprocess.Popen(
+        [python_executable, SCANNER_SCRIPT],
+        cwd=str(PROJECT_ROOT),
+    )
     processes.append(scanner_process)
     write_scanner_pid(scanner_process.pid)
 

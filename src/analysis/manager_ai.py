@@ -2,8 +2,11 @@
 ManagerAI - Orquestrador Central de Previsões.
 
 Regra de Negócio:
-    Unifica ProfessionalPredictor (Ensemble), NeuralChallenger (MLP)
+    Unifica JointCornersModel (champion), NeuralChallenger (shadow)
     e StatisticalAnalyzer em um pipeline de previsão único.
+
+    O JointCornersModel é o modelo de produção — 4 lambdas (h1H, a1H, h2H, a2H)
+    com coerência HT/FT garantida por construção.
 
 CHAMPION_ONLY_MODE (refactor/multimercado-cientifico):
     Quando CHAMPION_ONLY_MODE=True (default), o output final usa EXCLUSIVAMENTE
@@ -39,6 +42,7 @@ from src.models.neural_engine import NeuralChallenger
 from src.models.model_registry import ModelRegistry
 from src.analysis.statistical import StatisticalAnalyzer
 from src.ml.calibration import MultiThresholdCalibrator
+from src.ml.joint_model import JointCornersModel
 
 class ManagerAI:
     """
@@ -55,7 +59,8 @@ class ManagerAI:
         self.neural = NeuralChallenger()
         self.statistical = StatisticalAnalyzer()
         
-        # 2. Load Models
+        # 2. Load Models (Joint first — it's the champion)
+        self.joint_model = self._load_joint_model()
         self._load_ensemble()
         # Neural loads itself in __init__
         
@@ -64,16 +69,38 @@ class ManagerAI:
 
         # 4. Resolve runtime roles from registry (with safe fallback)
         self.registry = self._load_registry()
-        self.runtime_champion_id = "ensemble_v1"
+        self.runtime_champion_id = "joint_corners_v1"
         self.runtime_challenger_id = "neural_challenger_v1"
         self._resolve_runtime_model_roles()
         
     def _load_ensemble(self):
+        import warnings as _w
         try:
-            self.ensemble.load_model()
+            with _w.catch_warnings():
+                _w.filterwarnings("ignore", message=".*serialized model.*", category=UserWarning)
+                _w.filterwarnings("ignore", message=".*older version.*", category=UserWarning)
+                self.ensemble.load_model()
             print("ManagerAI: Ensemble Loaded.")
         except Exception as e:
             print(f"ManagerAI: Ensemble load failed: {e}")
+
+    def _load_joint_model(self):
+        """Load JointCornersModel (4-lambda champion) from artifact."""
+        import warnings as _w
+        joint_path = Path('models/joint_corners_model.joblib')
+        if not joint_path.exists():
+            print("ManagerAI: JointCornersModel not found. Falling back to legacy models.")
+            return None
+        try:
+            with _w.catch_warnings():
+                _w.filterwarnings("ignore", message=".*serialized model.*", category=UserWarning)
+                _w.filterwarnings("ignore", message=".*older version.*", category=UserWarning)
+                model = JointCornersModel.load(str(joint_path))
+            print(f"ManagerAI: JointCornersModel loaded ({len(model.feature_names_)} features).")
+            return model
+        except Exception as e:
+            print(f"ManagerAI: JointCornersModel load failed: {e}")
+            return None
 
     def _load_calibrator(self):
         try:
@@ -130,7 +157,16 @@ class ManagerAI:
 
         # Backward-compatible fallback when registry adapter is unavailable.
         if adapter is None:
-            adapter = "neural" if "neural" in model_id.lower() else "ensemble"
+            if "joint" in model_id.lower():
+                adapter = "joint"
+            elif "neural" in model_id.lower():
+                adapter = "neural"
+            else:
+                adapter = "ensemble"
+
+        if adapter == "joint" and self.joint_model is not None:
+            lambdas = self.joint_model.predict_lambda(features_vector)
+            return float(lambdas["ft_total"])
 
         if adapter == "neural":
             l_home, l_away = self.neural.predict_lambda(features_vector)
@@ -242,11 +278,25 @@ class ManagerAI:
         a_history = df_history[df_history['away_team_id'] == away_id].sort_values('start_timestamp')
         
         # Neural Params for Hybrid Mode (Dynamic Calculation)
-        # We call the Neural Challenger to estimate variance and specific lambdas based on recent history
-        neural_dist_params = self.neural.get_neural_distributions(
-            match_stats={'home_id': home_id, 'away_id': away_id, 'tournament_id': tourn_id},
-            df_history=df_history
-        )
+        # JointCornersModel provides 4 lambdas with HT/FT coherence.
+        # Falls back to NeuralChallenger if Joint is unavailable.
+        if self.joint_model is not None:
+            joint_lambdas = self.joint_model.predict_lambda(features_vector)
+            neural_dist_params = {
+                'lambda_home': joint_lambdas['home_ft'],
+                'lambda_away': joint_lambdas['away_ft'],
+                'lambda_home_1h': joint_lambdas['home_1H'],
+                'lambda_away_1h': joint_lambdas['away_1H'],
+                'lambda_home_2h': joint_lambdas['home_2H'],
+                'lambda_away_2h': joint_lambdas['away_2H'],
+                'variance_factor': 1.0,
+                'source': 'joint_corners_v1',
+            }
+        else:
+            neural_dist_params = self.neural.get_neural_distributions(
+                match_stats={'home_id': home_id, 'away_id': away_id, 'tournament_id': tourn_id},
+                df_history=df_history
+            )
         
         # Override with current inference if available (get_neural_distributions re-runs inference, 
         # but we already have neural_home/neural_away from step 4. 
@@ -297,7 +347,10 @@ class ManagerAI:
         print(f"\n[DEBUG PREDICT] Match: {home_name} vs {away_name}")
         print(f"[DEBUG PREDICT] Champion ID:      {self.runtime_champion_id}")
         print(f"[DEBUG PREDICT] Challenger ID:    {self.runtime_challenger_id}")
-        print(f"[DEBUG PREDICT] Ensemble Output: {ensemble_raw:.4f}")
+        if self.joint_model is not None:
+            _jl = self.joint_model.predict_lambda(features_vector)
+            print(f"[DEBUG PREDICT] Joint λ(h1H={_jl['home_1H']:.2f} a1H={_jl['away_1H']:.2f} "
+                  f"h2H={_jl['home_2H']:.2f} a2H={_jl['away_2H']:.2f}) → FT={_jl['ft_total']:.2f}")
         print(f"[DEBUG PREDICT] Neural Output:   {neural_total:.4f}")
         print(f"[DEBUG PREDICT] Champion Output: {champion_raw:.4f}")
         print(f"[DEBUG PREDICT] Challenger Out:  {challenger_raw:.4f}")

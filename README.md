@@ -39,7 +39,7 @@ All markets are derived from a single latent vector `Y = [home_1H, away_1H, home
 1. **Setup environment**: use the workspace virtual environment `.venv`.
 2. **Train the multimercado joint model** (required for scientific Top 7):
    ```bash
-   # Via CLI interactive menu (option 8):
+   # Via CLI interactive menu (option 2 - Joint default; option 8 is compatibility alias):
    python src/main.py
    # Or via script:
    python scripts/train_model.py
@@ -50,6 +50,14 @@ All markets are derived from a single latent vector `Y = [home_1H, away_1H, home
 6. **Check model health**: `python scripts/check_model_health.py`.
 
 See `README_ML.md` for the complete training guide and methodology.
+
+## Operational Notes (CLI + Web)
+
+- **Single training truth**: Joint training is the default in CLI option `2` and in web endpoint `POST /api/model/train`.
+- **Compatibility alias**: CLI option `8` calls the same Joint flow and is kept only to avoid operator breakage.
+- **Legacy namespace**: old AutoML optimization is now explicitly legacy at `POST /api/legacy/model/optimize`.
+- **Deprecated alias**: `POST /api/model/optimize` remains as compatibility alias and returns deprecation metadata.
+- **Top 7 method**: scanner ranking uses `ScientificSelectionStrategy` in `src/analysis/unified_scanner.py`.
 
 ## Documentation
 

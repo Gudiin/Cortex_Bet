@@ -163,7 +163,7 @@ class JointTrainer:
 
         Retorna métricas por família de mercado (MAE dos lambdas).
         """
-        tscv = TimeSeriesSplit(n_splits=self.n_splits, min_train_size=self.min_train_size)
+        tscv = TimeSeriesSplit(n_splits=self.n_splits)
 
         fold_metrics: Dict[str, List[float]] = {col: [] for col in JOINT_TARGET_DISPLAY}
 
@@ -176,21 +176,17 @@ class JointTrainer:
             X_val = X_reset.iloc[val_idx]
             Y_val = Y_reset.iloc[val_idx]
 
-            if len(X_tr) < 50:
+            if len(X_tr) < self.min_train_size:
                 continue
 
             m = JointCornersModel(random_state=self.random_state)
             m.fit(X_tr, Y_tr)
 
-            for j, col in enumerate(JOINT_TARGET_DISPLAY):
-                preds = [
-                    m.predict_lambda(X_val.iloc[[i]]).get("home_1H" if j == 0 else
-                                                           "away_1H" if j == 1 else
-                                                           "home_2H" if j == 2 else
-                                                           "away_2H", 0.0)
-                    for i in range(len(X_val))
-                ]
-                mae = float(np.mean(np.abs(np.array(preds) - Y_val[col].values)))
+            # Batch predict — vetorizado
+            lambdas_df = m.predict_lambda_batch(X_val)
+            for col in JOINT_TARGET_DISPLAY:
+                preds = lambdas_df[col].values
+                mae = float(np.mean(np.abs(preds - Y_val[col].values)))
                 fold_metrics[col].append(mae)
 
             print(f"  [Fold {fold_i + 1}] MAE: "
@@ -213,14 +209,14 @@ class JointTrainer:
         """
         Gera probabilidades out-of-fold para cada família de mercado.
 
-        Usado para ajustar o PerMarketCalibrator de forma não-enviesada.
+        Usa cálculo analítico via CDF Poisson (vetorizado) em vez de MC por amostra,
+        tornando o processo ~1000x mais rápido sem perda de precisão (lambda3=0).
 
         Returns:
             (oof_probs, oof_labels) — dicts {family: array}
         """
-        tscv = TimeSeriesSplit(n_splits=self.n_splits, min_train_size=self.min_train_size)
+        tscv = TimeSeriesSplit(n_splits=self.n_splits)
 
-        # Linhas padrão por família (Over)
         default_lines = {
             "ft_total":  9.5,
             "ht_total":  4.5,
@@ -233,44 +229,43 @@ class JointTrainer:
             "ht2_away":  2.5,
         }
 
-        oof_probs: Dict[str, List[float]] = {f: [] for f in MARKET_FAMILIES}
-        oof_labels: Dict[str, List[float]] = {f: [] for f in MARKET_FAMILIES}
+        oof_probs: Dict[str, List[np.ndarray]] = {f: [] for f in MARKET_FAMILIES}
+        oof_labels: Dict[str, List[np.ndarray]] = {f: [] for f in MARKET_FAMILIES}
 
         X_r = X.reset_index(drop=True)
         Y_r = Y.reset_index(drop=True)
 
-        for train_idx, val_idx in tscv.split(X_r):
+        for fold_i, (train_idx, val_idx) in enumerate(tscv.split(X_r)):
             X_tr = X_r.iloc[train_idx]
             Y_tr = Y_r.iloc[train_idx]
             X_val = X_r.iloc[val_idx]
             Y_val = Y_r.iloc[val_idx]
 
-            if len(X_tr) < 50:
+            if len(X_tr) < self.min_train_size:
                 continue
 
             m = JointCornersModel(random_state=self.random_state)
             m.fit(X_tr, Y_tr)
 
-            for i in range(len(X_val)):
-                lam = m.predict_lambda(X_val.iloc[[i]])
-                markets = self.translator.translate(lam)
+            # Batch predict + analytical P(over) — vetorizado
+            lambdas_df = m.predict_lambda_batch(X_val)
+            probs = MarketTranslator.compute_prob_over_analytical(lambdas_df, default_lines)
 
-                # Valores reais
-                y_row = Y_val.iloc[i]
-                actuals = _actuals_from_row(y_row)
+            # Actuals vetorizados
+            actuals_df = _actuals_batch(Y_val)
 
-                for family in MARKET_FAMILIES:
-                    line = default_lines[family]
-                    dist_list = markets.get(family, [])
-                    dist = next((d for d in dist_list if d.line == line), None)
-                    if dist is None:
-                        continue
-                    oof_probs[family].append(dist.prob_over)
-                    oof_labels[family].append(float(actuals.get(family, 0) > line))
+            for family in MARKET_FAMILIES:
+                line = default_lines[family]
+                if family not in probs:
+                    continue
+                oof_probs[family].append(probs[family])
+                oof_labels[family].append((actuals_df[family].values > line).astype(float))
+
+            print(f"  [OOF Fold {fold_i + 1}] {len(X_val)} amostras processadas (analítico)")
 
         return (
-            {f: np.array(v) for f, v in oof_probs.items()},
-            {f: np.array(v) for f, v in oof_labels.items()},
+            {f: np.concatenate(v) if v else np.array([]) for f, v in oof_probs.items()},
+            {f: np.concatenate(v) if v else np.array([]) for f, v in oof_labels.items()},
         )
 
 
@@ -295,3 +290,22 @@ def _actuals_from_row(y_row: pd.Series) -> Dict[str, float]:
         "ht2_home":  h2H,
         "ht2_away":  a2H,
     }
+
+
+def _actuals_batch(Y: pd.DataFrame) -> pd.DataFrame:
+    """Deriva os 9 mercados vetorizados a partir do DataFrame Y_joint."""
+    h1H = Y["home_1H"]
+    a1H = Y["away_1H"]
+    h2H = Y["home_2H"]
+    a2H = Y["away_2H"]
+    return pd.DataFrame({
+        "ft_total":  h1H + a1H + h2H + a2H,
+        "ht_total":  h1H + a1H,
+        "ht2_total": h2H + a2H,
+        "ft_home":   h1H + h2H,
+        "ft_away":   a1H + a2H,
+        "ht_home":   h1H,
+        "ht_away":   a1H,
+        "ht2_home":  h2H,
+        "ht2_away":  a2H,
+    }, index=Y.index)

@@ -215,16 +215,19 @@ class StatisticalAnalyzer:
         
         # Log detalhado (Cyborg Style)
         print(f"\n{Colors.CYAN}{'='*80}")
-        header = f"🤖 NEURAL-STATISTICAL ENGINE ({match_name})" if match_name else "🤖 NEURAL-STATISTICAL ENGINE"
+        header = f"� JOINT-STATISTICAL ENGINE ({match_name})" if match_name else "🧬 JOINT-STATISTICAL ENGINE"
         print(f"{header}")
         print(f"{'='*80}{Colors.RESET}")
         
         total_pred = lambda_home + lambda_away
         split_h = lambda_home / total_pred if total_pred > 0 else 0.5
         
-        print(f"🧠 Neural Prediction: {total_pred:.2f} corners")
+        source = neural_params.get('source', 'neural_legacy')
+        print(f"🧠 {source} Prediction: {total_pred:.2f} corners")
         print(f"🏠 Home λ: {lambda_home:.2f} ({split_h*100:.1f}%)") 
         print(f"✈️  Away λ: {lambda_away:.2f} ({(1-split_h)*100:.1f}%)")
+        if 'lambda_home_1h' in neural_params:
+            print(f"📊 HT λ: h1H={neural_params['lambda_home_1h']:.2f} a1H={neural_params['lambda_away_1h']:.2f}")
         print(f"🌊 Variance Factor: {neural_params.get('variance_factor', 1.0):.2f}")
         print(f"{Colors.CYAN}{'='*80}{Colors.RESET}\n")
         
@@ -663,17 +666,19 @@ class StatisticalAnalyzer:
         dist_h_ht, mean_h_ht, var_h_ht = self._get_distribution_params(h_corners_ht)
         dist_a_ht, mean_a_ht, var_a_ht = self._get_distribution_params(a_corners_ht)
         
-        # ⚖️ HT Consistency Scaling (PhD Improvement)
-        # Propaga a "opinião" da IA para o HT usando a proporção FT
-        ratio_h = mean_h / mean_h_hist
-        ratio_a = mean_a / mean_a_hist
-        
-        # Limita ratio para evitar distorções extremas (0.5x a 2.0x)
-        ratio_h = max(0.5, min(2.0, ratio_h))
-        ratio_a = max(0.5, min(2.0, ratio_a))
-        
-        mean_h_ht = mean_h_ht * ratio_h
-        mean_a_ht = mean_a_ht * ratio_a
+        # Joint model provides dedicated HT lambdas — use them directly
+        _np = advanced_metrics.get('neural_params', {}) if advanced_metrics else {}
+        if _np.get('source') == 'joint_corners_v1' and 'lambda_home_1h' in _np:
+            mean_h_ht = _np['lambda_home_1h']
+            mean_a_ht = _np['lambda_away_1h']
+        else:
+            # ⚖️ HT Consistency Scaling (Legacy: proportion from FT)
+            ratio_h = mean_h / mean_h_hist
+            ratio_a = mean_a / mean_a_hist
+            ratio_h = max(0.5, min(2.0, ratio_h))
+            ratio_a = max(0.5, min(2.0, ratio_a))
+            mean_h_ht = mean_h_ht * ratio_h
+            mean_a_ht = mean_a_ht * ratio_a
         
         sim_ht = self.simulate_match_event(mean_h_ht, mean_a_ht, var_h_ht, var_a_ht)
         
@@ -850,7 +855,7 @@ class StatisticalAnalyzer:
         # Exibição no Terminal (apenas se executado via CLI)
         if match_name:
             print(f"\n{Colors.CYAN}{'─'*80}")
-            print(f" 🧠 {Colors.BOLD}STATISTICAL ENGINE (Monte Carlo Simulation){Colors.RESET}")
+            print(f" 📊 {Colors.BOLD}MONTE CARLO ANALYSIS — Joint λ{Colors.RESET}")
             print(f"{Colors.CYAN}{'─'*80}{Colors.RESET}")
             
             print(f"\n🏆 {Colors.BOLD}TOP 7 OPPORTUNITIES (Data-Driven Analysis){Colors.RESET}")

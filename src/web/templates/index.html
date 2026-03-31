@@ -987,13 +987,13 @@
                 class="btn btn-outline-success w-100"
                 onclick="trainModel()"
               >
-                Retreinar Modelo IA
+                Treinar Modelo Joint (Padrão)
               </button>
               <button
                 class="btn btn-outline-info w-100 mt-2"
                 onclick="optimizeModel()"
               >
-                <i class="bi bi-stars me-2"></i>Otimizar Modelo (AutoML)
+                <i class="bi bi-stars me-2"></i>Otimizar Modelo (AutoML Legado)
               </button>
             </div>
             <hr class="border-secondary" />
@@ -1657,20 +1657,18 @@
             return;
           }
 
-          res.forEach((item) => {
-            const confColor = item.confidence > 80 ? "success" : "primary";
+          res.forEach((item, idx) => {
+            const confColor = item.confidence > 80 ? "success" : item.confidence > 65 ? "primary" : "warning";
+            const timeLabel = item.status === "inprogress" && item.status_description
+                ? '<span class="text-danger animate-pulse">● ' + item.status_description + '</span>'
+                : (item.start_time ? (item.start_time.includes(' ') ? item.start_time.split(' ')[1] : item.start_time) : '—');
+            const leagueBadge = item.tournament ? `<span class="badge bg-secondary bg-opacity-25 text-muted mb-1">${item.tournament}</span>` : '';
             const card = `
                         <div class="col-md-4">
                             <div class="glass-panel p-3 h-100 position-relative border-top border-4 border-${confColor}">
+                                ${leagueBadge}
                                 <div class="d-flex justify-content-between mb-2">
-                                    <span class="badge bg-dark text-muted">${
-                                      item.status === "inprogress" &&
-                                      item.status_description
-                                        ? '<span class="text-danger animate-pulse">● ' +
-                                          item.status_description +
-                                          "</span>"
-                                        : item.start_time.split(" ")[1]
-                                    }</span>
+                                    <span class="badge bg-dark text-muted">${timeLabel}</span>
                                     <span class="badge bg-${confColor} bg-opacity-10 text-${confColor} border border-${confColor}">${
               item.confidence
             }% Confiança</span>
@@ -1686,7 +1684,7 @@
                                         }</span>
                                     </div>
                                     <div class="text-end">
-                                        <small class="text-muted d-block">ML Pred</small>
+                                        <small class="text-muted d-block">E[X] Corners</small>
                                         <span class="fw-bold text-primary">${
                                           item.ml_prediction
                                         }</span>
@@ -1869,21 +1867,29 @@
       }
 
       function trainModel() {
-        setSystemStatus(true, "Treinando ML...");
+        setSystemStatus(true, "Treinando Joint...");
         $.ajax({
           url: "/api/model/train",
           method: "POST",
           contentType: "application/json",
-          data: JSON.stringify({ mode: "standard" }),
+          data: JSON.stringify({
+            n_splits: 5,
+            random_state: 42,
+            n_simulations: 10000,
+          }),
         }).done(() => pollStatus());
       }
 
       function optimizeModel() {
-        if (!confirm("Isso pode levar vários minutos. Deseja continuar?"))
+        if (
+          !confirm(
+            "Fluxo legado/depreciado. Isso pode levar vários minutos. Deseja continuar?"
+          )
+        )
           return;
         setSystemStatus(true, "Otimizando ML...");
         $.ajax({
-          url: "/api/model/optimize",
+          url: "/api/legacy/model/optimize",
           method: "POST",
           contentType: "application/json",
           data: JSON.stringify({ n_trials: 20 }),

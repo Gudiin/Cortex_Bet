@@ -1,8 +1,8 @@
 {
   "/page": "app/page.js",
-  "/api/system-status/route": "app/api/system-status/route.js",
-  "/api/validate-bets/route": "app/api/validate-bets/route.js",
-  "/api/bankroll/route": "app/api/bankroll/route.js",
+  "/api/auth/route": "app/api/auth/route.js",
   "/api/predictions/route": "app/api/predictions/route.js",
-  "/api/scanner/control/route": "app/api/scanner/control/route.js"
+  "/api/bankroll/route": "app/api/bankroll/route.js",
+  "/api/scanner/control/route": "app/api/scanner/control/route.js",
+  "/api/system-status/route": "app/api/system-status/route.js"
 }

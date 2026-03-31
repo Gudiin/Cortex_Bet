@@ -39,6 +39,11 @@ class SofaScoreScraper:
                 pass
 
         self.page.on("response", handle_response)
+
+        # Suppress noisy third-party JS errors (mapbox-gl, performance API in workers)
+        self.page.on("pageerror", lambda _: None)
+        self.page.on("console", lambda msg: None if msg.type == "error" else None)
+
         self.page.set_extra_http_headers(self.session.headers)
         
         # Retry logic for initial connection

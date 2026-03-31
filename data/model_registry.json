@@ -1,6 +1,6 @@
 {
   "schema_version": "1.0",
-  "current_champion": "neural_challenger_v1",
+  "current_champion": "joint_corners_v1",
   "promotion_policy": {
     "min_brier_improvement_pct": 3.0,
     "min_log_loss_improvement_pct": 3.0,
@@ -23,7 +23,7 @@
     },
     "neural_challenger_v1": {
       "name": "NeuralChallenger",
-      "role": "CHAMPION",
+      "role": "SHADOW",
       "runtime_adapter": "neural",
       "artifact_paths": [
         "models/neural_challenger_mlp.joblib",
@@ -34,6 +34,20 @@
         "brier_score": 0.2161,
         "log_loss": 0.3533,
         "n_eval_matches": 200
+      }
+    },
+    "joint_corners_v1": {
+      "name": "JointCornersModel",
+      "role": "CHAMPION",
+      "runtime_adapter": "joint",
+      "artifact_paths": [
+        "models/joint_corners_model.joblib"
+      ],
+      "registered_at": "2026-03-31T00:00:00+00:00",
+      "metrics": {
+        "brier_score": null,
+        "log_loss": null,
+        "n_eval_matches": null
       }
     }
   },
@@ -72,6 +86,21 @@
         "n_eval_matches": 200
       },
       "reason": "Promoção real após treino/calibração"
+    },
+    {
+      "event": "REGISTERED",
+      "model_id": "joint_corners_v1",
+      "role": "CHAMPION",
+      "timestamp": "2026-03-31T00:00:00+00:00",
+      "reason": "JointCornersModel (4-lambda LGBM Poisson) treinado com walk-forward 5-fold, seed=42. Modelo com coerência HT/FT por construção."
+    },
+    {
+      "event": "DEMOTED_TO_SHADOW",
+      "model_id": "neural_challenger_v1",
+      "from_role": "CHAMPION",
+      "timestamp": "2026-03-31T00:00:00+00:00",
+      "superseded_by": "joint_corners_v1",
+      "reason": "Substituído pelo JointCornersModel como champion. Mantido em shadow mode para comparação contínua."
     }
   ]
 }

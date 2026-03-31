@@ -359,20 +359,46 @@ def api_update_match():
 
 @app.route('/api/model/train', methods=['POST'])
 def api_train_model():
-    """Inicia treinamento do modelo em background."""
+    """Inicia treino multimercado (JointTrainer) em background."""
     data = request.json or {}
-    mode = data.get('mode', 'standard') # standard or optimized
+
+    # Compatibilidade com payload legado: mode=standard|optimized
+    mode = str(data.get('mode', 'standard')).lower()
+    if mode not in {'standard', 'optimized'}:
+        mode = 'standard'
+
+    default_sims = 20_000 if mode == 'optimized' else 10_000
+
+    try:
+        n_splits = int(data.get('n_splits', 5))
+        random_state = int(data.get('random_state', 42))
+        n_simulations = int(data.get('n_simulations', default_sims))
+    except (TypeError, ValueError):
+        return jsonify({
+            'error': 'Parâmetros inválidos. Use inteiros em n_splits, random_state, n_simulations.'
+        }), 400
+
+    if n_splits < 2:
+        return jsonify({'error': 'n_splits deve ser >= 2'}), 400
+    if n_simulations < 100:
+        return jsonify({'error': 'n_simulations deve ser >= 100'}), 400
     
     with state_lock:
         if system_state['is_running']:
             return jsonify({'error': 'Já existe uma tarefa em execução'}), 400
         system_state['is_running'] = True
-        system_state['current_task'] = f'Treinando modelo ({mode})'
+        system_state['current_task'] = (
+            f'Treino Joint (folds={n_splits}, seed={random_state}, MC={n_simulations})'
+        )
         system_state['progress'] = 0
     
     def run_train():
         try:
-            _train_model_task(mode)
+            _train_model_task(
+                n_splits=n_splits,
+                random_state=random_state,
+                n_simulations=n_simulations,
+            )
         finally:
             with state_lock:
                 system_state['is_running'] = False
@@ -383,15 +409,27 @@ def api_train_model():
     thread.daemon = True
     thread.start()
     
-    return jsonify({'status': 'started'})
+    response_payload = {
+        'status': 'started',
+        'trainer': 'joint',
+        'params': {
+            'n_splits': n_splits,
+            'random_state': random_state,
+            'n_simulations': n_simulations,
+        },
+    }
+
+    # Sinaliza payload antigo sem quebrar clientes existentes.
+    if 'mode' in data:
+        response_payload['warning'] = (
+            "Campo 'mode' está depreciado. Use n_splits/random_state/n_simulations."
+        )
+
+    return jsonify(response_payload)
 
 
-@app.route('/api/model/optimize', methods=['POST'])
-def api_optimize_model():
-    """Inicia otimização de hiperparâmetros (AutoML)."""
-    data = request.json or {}
-    n_trials = data.get('n_trials', 20)
-    
+def _start_legacy_optimize_model(n_trials: int):
+    """Executa o fluxo legado de otimização em background."""
     with state_lock:
         if system_state['is_running']:
             return jsonify({'error': 'Já existe uma tarefa em execução'}), 400
@@ -411,8 +449,43 @@ def api_optimize_model():
     thread = threading.Thread(target=run_optimize)
     thread.daemon = True
     thread.start()
-    
+
     return jsonify({'status': 'started'})
+
+
+@app.route('/api/legacy/model/optimize', methods=['POST'])
+def api_legacy_optimize_model():
+    """Inicia otimização legado (AutoML) via namespace legacy."""
+    data = request.json or {}
+    n_trials = data.get('n_trials', 20)
+    emit_log(
+        '⚠️ Endpoint legado em uso: /api/legacy/model/optimize (deprecado).',
+        'warning',
+    )
+    return _start_legacy_optimize_model(n_trials)
+
+
+@app.route('/api/model/optimize', methods=['POST'])
+def api_optimize_model_alias():
+    """Alias legado: mantém compatibilidade e direciona para /api/legacy/model/optimize."""
+    data = request.json or {}
+    n_trials = data.get('n_trials', 20)
+    emit_log(
+        '⚠️ /api/model/optimize está depreciado. Use /api/legacy/model/optimize.',
+        'warning',
+    )
+    result = _start_legacy_optimize_model(n_trials)
+
+    if isinstance(result, tuple):
+        response, status_code = result
+    else:
+        response, status_code = result, 200
+
+    payload = response.get_json() if hasattr(response, 'get_json') else {}
+    payload = payload or {}
+    payload['deprecated'] = True
+    payload['replacement'] = '/api/legacy/model/optimize'
+    return jsonify(payload), status_code
 
 
 @app.route('/api/match/analyze', methods=['POST'])
@@ -1056,51 +1129,63 @@ def _update_single_match_task(match_id: str) -> None:
         db.close()
 
 
-def _train_model_task(mode: str = 'standard') -> None:
-    """Tarefa de treinamento do modelo (Atualizado para V2)."""
-    emit_log(f'🤖 Iniciando treinamento do modelo (Modo: {mode})...', 'info')
-    update_progress(10, 'Carregando dados...')
-    
-    db = DBManager()
-    df = db.get_historical_data()
-    db.close()
-    
-    if df.empty:
-        emit_log('❌ Banco de dados vazio. Execute a atualização primeiro.', 'error')
-        return
-    
-    emit_log(f'📊 Carregados {len(df)} registros para treino.', 'info')
-    update_progress(30, 'Gerando features avançadas (V2)...')
-    
-    try:
-        # Garante colunas corretas
-        if 'home_score' in df.columns and 'goals_ft_home' not in df.columns:
-            df['goals_ft_home'] = df['home_score']
-        if 'away_score' in df.columns and 'goals_ft_away' not in df.columns:
-            df['goals_ft_away'] = df['away_score']
+def _train_model_task(
+    n_splits: int = 5,
+    random_state: int = 42,
+    n_simulations: int = 10_000,
+) -> None:
+    """Tarefa de treino multimercado científico (JointTrainer)."""
+    emit_log(
+        (
+            '🧬 Iniciando treino Joint '
+            f'(folds={n_splits}, seed={random_state}, MC={n_simulations})...'
+        ),
+        'info',
+    )
+    update_progress(10, 'Carregando histórico...')
 
-        # 1. Prepara features vetorizadas
-        X, y, timestamps = create_advanced_features(df, window_short=3, window_long=5)
-        
-        emit_log(f'🔧 Features V2 geradas: {X.shape[1]} colunas, {len(y)} amostras', 'info')
-        update_progress(50, 'Treinando Professional Predictor...')
-        
-        # 2. Treina Modelo
-        predictor = ProfessionalPredictor()
-        
-        if mode == 'optimized':
-            # Simulação de otimização (ou implementação real se houver método)
-            emit_log('🚀 Treinando com validação temporal...', 'highlight')
-            predictor.train_time_series_split(X, y, timestamps)
-        else:
-            predictor.train_time_series_split(X, y, timestamps)
-            
-        emit_log('✅ Modelo Professional V2 treinado e salvo!', 'success')
-        
+    db = DBManager()
+    try:
+        df = db.get_historical_data()
+        if df.empty:
+            emit_log('❌ Banco de dados vazio. Execute a atualização primeiro.', 'error')
+            return
+
+        if len(df) < 200:
+            emit_log('⚠️ Histórico insuficiente. Necessário ≥ 200 jogos com dados HT.', 'warning')
+            return
+
+        emit_log(f'📊 Carregados {len(df)} registros para treino Joint.', 'info')
+        update_progress(30, 'Preparando FeatureStore...')
+
+        from src.features.feature_store import FeatureStore
+        from src.training.joint_trainer import JointTrainer
+
+        feature_store = FeatureStore(db)
+        update_progress(50, 'Executando walk-forward + calibração por família...')
+
+        trainer = JointTrainer(
+            n_splits=n_splits,
+            n_simulations=n_simulations,
+            random_state=random_state,
+        )
+        report = trainer.run(df, feature_store)
+
+        update_progress(85, 'Finalizando relatório...')
+        oof = report.get('oof_metrics', {}) if isinstance(report, dict) else {}
+        if oof:
+            emit_log('📈 MAE OOF por target joint:', 'highlight')
+            for target, value in oof.items():
+                if isinstance(value, (int, float)):
+                    emit_log(f'   - {target}: {value:.3f}', 'info')
+
+        emit_log('✅ Treino Joint concluído. Artefatos atualizados em models/ e data/evaluation/.', 'success')
     except Exception as e:
-        emit_log(f'❌ Erro no treinamento: {e}', 'error')
+        emit_log(f'❌ Erro no treino Joint: {e}', 'error')
         import traceback
         traceback.print_exc()
+    finally:
+        db.close()
 
     update_progress(100, 'Treinamento concluído')
 
@@ -1296,136 +1381,76 @@ def _analyze_match_task(match_id: str) -> Dict[str, Any]:
 
 def _scan_opportunities_task(date_mode: str, specific_date: str = None) -> None:
     """
-    Tarefa de background para o Scanner de Oportunidades (PRE-LIVE).
-    
-    Objetivo: Encontrar NOVOS jogos que ainda não estão no banco de dados.
-    Filtro: Apenas Top 8 Ligas (Hardcoded).
+    Tarefa de background para o Scanner de Oportunidades.
+    Usa scan_opportunities_core (mesmo pipeline do CLI opção 7).
+    Top 7 via ScientificSelectionStrategy.
     """
     from datetime import datetime, timedelta, timezone
-    import time
-    
+    from src.analysis.unified_scanner import scan_opportunities_core
+
     # 1. Determina a data (UTC-3)
     brt_tz = timezone(timedelta(hours=-3))
     now_brt = datetime.now(brt_tz)
-    
+
     if date_mode == 'tomorrow':
         date_str = (now_brt + timedelta(days=1)).strftime('%Y-%m-%d')
         date_label = f"AMANHÃ ({date_str})"
     elif date_mode == 'specific' and specific_date:
         date_str = specific_date
         date_label = specific_date
-    else: # today
+    else:  # today
         date_str = now_brt.strftime('%Y-%m-%d')
         date_label = f"HOJE ({date_str})"
-        
-    # 2. Determina ligas (Top 8 Hardcoded)
-    # IDs: Brasileirão A (325), Série B (390), Premier (17), La Liga (8), 
-    # Bundesliga (31), Serie A (35), Ligue 1 (34), Liga Profesional (23)
-    leagues_filter = [325, 390, 17, 8, 31, 35, 34, 23]
-        
-    emit_log(f'🔍 Iniciando Scanner Pre-Live (Top 8 Ligas) para {date_label}...', 'info')
-    update_progress(5, 'Inicializando scraper...')
-    
-    with state_lock:
-        headless = system_state['config']['headless']
-        
-    scraper = SofaScoreScraper(headless=headless)
-    db = DBManager()
-    
-    try:
-        # Tenta carregar modelo ML
-        try:
-            predictor = ProfessionalPredictor()
-            model_loaded = predictor.load_model()
-            if model_loaded:
-                emit_log('🤖 Modelo Professional V2 carregado.', 'info')
-            else:
-                emit_log('⚠️ Modelo ML não encontrado. Usando simulação.', 'warning')
-        except ImportError:
-            model_loaded = False
-            predictor = None
 
-        scraper.start()
-        update_progress(10, 'Buscando agenda de jogos...')
-        
-        # Busca jogos agendados
-        matches = scraper.get_scheduled_matches(date_str, leagues_filter)
-        
-        if not matches:
-            emit_log('❌ Nenhum jogo encontrado na agenda.', 'warning')
-            return
-            
-        emit_log(f'📅 Agenda: {len(matches)} jogos encontrados.', 'info')
-        
-        # FILTRO DE NOVOS JOGOS
-        # Verifica quais já estão no banco para não processar de novo
-        conn = db.connect()
-        existing_ids = pd.read_sql_query("SELECT match_id FROM matches", conn)['match_id'].astype(str).tolist()
-        conn.close()
-        
-        new_matches = [m for m in matches if str(m['match_id']) not in existing_ids]
-        
-        if not new_matches:
-            emit_log('✅ Todos os jogos da agenda já foram analisados.', 'success')
-            update_progress(100, 'Concluído')
-            return
-            
-        emit_log(f'🚀 {len(new_matches)} NOVOS jogos para analisar!', 'highlight')
-        update_progress(20, f'Analisando {len(new_matches)} novos jogos...')
-        
+    emit_log(f'🔍 Iniciando Scanner Científico para {date_label}...', 'info')
+    update_progress(5, 'Inicializando pipeline científico...')
+
+    def _progress_bridge(percent: int, message: str):
+        """Repassa progresso do unified_scanner para o websocket."""
+        emit_log(message, 'info')
+        update_progress(percent, message)
+
+    db = DBManager()
+
+    try:
+        results = scan_opportunities_core(
+            date_str=date_str,
+            db=db,
+            progress_callback=_progress_bridge,
+            verbose=True
+        )
+
+        # Adapta formato para o template HTML existente
         opportunities = []
-        total = len(new_matches)
-        
-        # Carrega histórico
-        df_history = db.get_historical_data()
-        
-        for i, match in enumerate(new_matches):
-            progress = 20 + int((i / total) * 75)
-            match_name = f"{match['home_team']} vs {match['away_team']}"
-            
-            emit_log(f'[{i+1}/{total}] Analisando: {match_name}', 'info')
-            update_progress(progress, f'Analisando {i+1}/{total}')
-            
-            try:
-                if not model_loaded or df_history.empty:
-                    continue
-                
-                match_id = match.get('match_id')
-                if not match_id: continue
-                    
-                # Busca detalhes e processa
-                details = scraper.get_match_details(match_id)
-                if not details:
-                    emit_log(f'   ⚠️ Erro ao buscar detalhes.', 'warning')
-                    continue
-                
-                result = _process_match_prediction(details, predictor, df_history, db)
-                
-                if 'error' not in result:
-                    if result['confidence'] >= 60:
-                        result['start_time'] = match['start_time']
-                        result['tournament'] = match['tournament']
-                        opportunities.append(result)
-                        emit_log(f"   ✅ Oportunidade: {result['best_bet']} (@1.85)", 'success')
-                    else:
-                        emit_log(f"   ℹ️ Baixa confiança ({result['confidence']}%)", 'info')
-                        
-            except Exception as e:
-                print(f"Erro ao analisar {match_name}: {e}")
-                
-        # Ordena e salva resultados
+        for r in results:
+            opportunities.append({
+                'match_id': r['match_id'],
+                'match_name': r['match'],
+                'best_bet': r['bet'],
+                'confidence': round(r['confidence'] * 100),
+                'ml_prediction': f"{r['prediction']:.1f}",
+                'start_time': r.get('start_time', ''),
+                'tournament': r.get('league', ''),
+                'status': r.get('status', 'scheduled'),
+                'status_description': r.get('match_minute', ''),
+                'raw_score': r.get('raw_score', 0),
+                'line_val': r.get('line_val', 0),
+            })
+
+        # Ordena por confidence (já vem do pipeline científico)
         opportunities.sort(key=lambda x: x['confidence'], reverse=True)
-        
+
         with state_lock:
             system_state['scan_results'] = opportunities
-            
-        emit_log(f'✅ Scanner finalizado! {len(opportunities)} novas oportunidades.', 'success')
+
+        emit_log(f'✅ Scanner Científico finalizado! {len(opportunities)} oportunidades (Top 7 Científico salvo no banco).', 'success')
         update_progress(100, 'Concluído')
-        
+
     except Exception as e:
         emit_log(f'❌ Erro no scanner: {str(e)}', 'error')
+        import traceback
+        traceback.print_exc()
     finally:
-        scraper.stop()
         db.close()
 
 

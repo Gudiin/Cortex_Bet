@@ -1,4 +1,4 @@
-// File: c:\Users\Valmont\Desktop\Cortex_Bet\web_app\app\api\scanner\control\route.ts
+// File: C:\github\Cortex_Bet\web_app\app\api\scanner\control\route.ts
 import * as entry from '../../../../../../app/api/scanner/control/route.js'
 import type { NextRequest } from 'next/server.js'
 

@@ -178,5 +178,33 @@ Para cada heurística: comparar Brier Score com vs. sem em walk-forward temporal
 | 2026-03-31 | Criar SciEvaluator (Brier, ECE, RPS) | `src/evaluation/sci_evaluator.py` |
 | 2026-03-31 | Criar JointTrainer (pipeline completo) | `src/training/joint_trainer.py` |
 | 2026-03-31 | Adicionar create_joint_targets() | `src/ml/features_v2.py` |
+| 2026-03-31 | CLI opção 2 → treino Joint padrão | `src/interface/cli.py` |
+| 2026-03-31 | CLI opção 8 → alias de compatibilidade | `src/interface/cli.py` |
+| 2026-03-31 | Web /api/model/train → JointTrainer | `src/web/server.py` |
+| 2026-03-31 | Mover AutoML para /api/legacy/model/optimize | `src/web/server.py` |
+| 2026-03-31 | Alias /api/model/optimize → deprecated + legacy | `src/web/server.py` |
 
 Ver detalhes: `docs/decision_log.md`
+
+---
+
+## 11. Contrato Operacional (CLI + Web)
+
+### 11.1 Treino Canônico
+- CLI: opção `2` = treino Joint padrão
+- CLI: opção `8` = **alias de compatibilidade** da opção 2
+- Web: `POST /api/model/train` = treino Joint padrão
+
+Parâmetros canônicos:
+- `n_splits` (default `5`)
+- `random_state` (default `42`)
+- `n_simulations` (default `10000`)
+
+### 11.2 Namespace Legacy
+- Fluxos legados devem ficar em `/api/legacy/*`
+- Endpoint legado atual: `POST /api/legacy/model/optimize`
+- Alias antigo mantido por compatibilidade: `POST /api/model/optimize` com aviso de depreciação
+
+### 11.3 Top 7 Científico
+- Seleção Top 7 oficial: `ScientificSelectionStrategy` em `src/analysis/unified_scanner.py`
+- Proibido voltar para ranking heurístico baseado apenas em confiança

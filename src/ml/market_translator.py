@@ -32,6 +32,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 import numpy as np
+import pandas as pd
 from scipy.stats import poisson, nbinom
 
 
@@ -257,6 +258,57 @@ class MarketTranslator:
             "ht2_home":  [1.5, 2.5, 3.5],
             "ht2_away":  [1.5, 2.5, 3.5],
         }
+
+    # ------------------------------------------------------------------
+    # Fast analytical P(over) — para OOF calibration (sem MC)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def compute_prob_over_analytical(
+        lambdas_df: pd.DataFrame,
+        lines: Optional[Dict[str, float]] = None,
+    ) -> Dict[str, np.ndarray]:
+        """
+        Computa P(X > line) analiticamente via CDF Poisson para cada família.
+
+        Válido quando lambda3=0 (Poisson independente), que é o default.
+        Resultado: dict {family: array de probabilidades shape (n_samples,)}.
+
+        Args:
+            lambdas_df: DataFrame com colunas do predict_lambda_batch().
+            lines: {family: line} — uma linha por família.
+        """
+        if lines is None:
+            lines = {
+                "ft_total": 9.5, "ht_total": 4.5, "ht2_total": 4.5,
+                "ft_home": 4.5, "ft_away": 4.5,
+                "ht_home": 2.5, "ht_away": 2.5,
+                "ht2_home": 2.5, "ht2_away": 2.5,
+            }
+
+        # Mapping: family → lambda column in the batch dataframe
+        family_to_lambda = {
+            "ft_total": "ft_total",
+            "ht_total": "total_1H",
+            "ht2_total": "total_2H",
+            "ft_home": "home_ft",
+            "ft_away": "away_ft",
+            "ht_home": "home_1H",
+            "ht_away": "away_1H",
+            "ht2_home": "home_2H",
+            "ht2_away": "away_2H",
+        }
+
+        result = {}
+        for family, line in lines.items():
+            col = family_to_lambda.get(family)
+            if col is None or col not in lambdas_df.columns:
+                continue
+            lam_arr = lambdas_df[col].values
+            # P(X > line) = 1 - P(X <= floor(line)) = poisson.sf(floor(line), lambda)
+            result[family] = poisson.sf(int(np.floor(line)), lam_arr).clip(1e-6, 1 - 1e-6)
+
+        return result
 
     # ------------------------------------------------------------------
     # Comparação com odd do usuário (opcional)
