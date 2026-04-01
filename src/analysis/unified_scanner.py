@@ -352,8 +352,6 @@ def scan_opportunities_core(
                          f"Family: {pick.market_family}"
                      )
                      
-                     import json
-                     
                      db.save_prediction(
                          match_id=int(pick.match_id),
                          model_version='CORTEX_SCIENTIFIC_V1',
@@ -368,32 +366,7 @@ def scan_opportunities_core(
                          verbose=False
                      )
                      
-                     # Save scientific metadata as separate prediction for UI enrichment
-                     sci_meta = {
-                         'rank': i,
-                         'scientific_score': pick.rank_score,
-                         'uncertainty': pick.uncertainty,
-                         'expected_corners': pick.expected_corners,
-                         'ci_90': [pick.ci_90_low, pick.ci_90_high],
-                         'stability': pick.stability_score,
-                         'ece_local': pick.ece_local,
-                         'market_family': pick.market_family,
-                         'market_distributions': pick.market_distributions,
-                     }
-                     
-                     db.save_prediction(
-                         match_id=int(pick.match_id),
-                         model_version='CORTEX_SCIENTIFIC_META',
-                         value=pick.rank_score,
-                         label=f"SCI_RANK_{i}",
-                         confidence=pick.rank_score,
-                         odds=0.0,
-                         category='ScientificMeta',
-                         market_group='ScientificData',
-                         feedback_text=json.dumps(sci_meta, default=str),
-                         fair_odds=0.0,
-                         verbose=False
-                     )
+                     # ScientificMeta persistence removed: do not create SCI_RANK_* records.
                      
         except Exception as e:
             if verbose: print(f"⚠️ Manager AI Error: {e}")

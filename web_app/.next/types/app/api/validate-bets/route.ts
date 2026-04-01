@@ -1,8 +1,8 @@
-// File: C:\github\Cortex_Bet\web_app\app\api\bankroll\route.ts
-import * as entry from '../../../../../app/api/bankroll/route.js'
+// File: C:\github\Cortex_Bet\web_app\app\api\validate-bets\route.ts
+import * as entry from '../../../../../app/api/validate-bets/route.js'
 import type { NextRequest } from 'next/server.js'
 
-type TEntry = typeof import('../../../../../app/api/bankroll/route.js')
+type TEntry = typeof import('../../../../../app/api/validate-bets/route.js')
 
 // Check that the entry is a valid entry
 checkFields<Diff<{

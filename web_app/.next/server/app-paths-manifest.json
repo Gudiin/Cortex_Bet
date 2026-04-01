@@ -1,7 +1,6 @@
 {
   "/api/system-status/route": "app/api/system-status/route.js",
-  "/page": "app/page.js",
-  "/api/bankroll/route": "app/api/bankroll/route.js",
+  "/api/validate-bets/route": "app/api/validate-bets/route.js",
   "/api/predictions/route": "app/api/predictions/route.js",
   "/api/scanner/control/route": "app/api/scanner/control/route.js"
 }

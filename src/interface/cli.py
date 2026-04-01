@@ -317,6 +317,180 @@ def train_joint_model() -> None:
         db.close()
 
 
+def update_pending_by_date() -> None:
+    """Atualiza resultados de jogos pendentes por data e verifica GREEN/RED."""
+    from datetime import datetime, timedelta, timezone
+    
+    brt = timezone(timedelta(hours=-3))
+    now_brt = datetime.now(brt)
+    
+    print("\n" + "=" * 50)
+    print("🔄 ATUALIZAR RESULTADOS PENDENTES")
+    print("=" * 50)
+    print("1. Ontem")
+    print("2. Hoje")
+    print("3. Data específica (AAAA-MM-DD)")
+    print("4. Todos os pendentes (histórico)")
+    
+    date_choice = input("Escolha: ").strip()
+    
+    target_date = None
+    force_all = False
+    
+    if date_choice == '1':
+        target_date = (now_brt - timedelta(days=1)).strftime('%Y-%m-%d')
+    elif date_choice == '2':
+        target_date = now_brt.strftime('%Y-%m-%d')
+    elif date_choice == '3':
+        target_date = input("Digite a data (AAAA-MM-DD): ").strip()
+    elif date_choice == '4':
+        force_all = True
+    else:
+        print("❌ Opção inválida.")
+        return
+    
+    db = DBManager()
+    scraper = SofaScoreScraper(headless=True, verbose=True)
+    
+    try:
+        conn = db.connect()
+        cursor = conn.cursor()
+        
+        # 1. Buscar jogos pendentes
+        if target_date:
+            print(f"\n🔍 Buscando jogos pendentes para {target_date}...")
+            query = """
+                SELECT match_id, home_team_name, away_team_name, status, start_timestamp 
+                FROM matches 
+                WHERE DATE(datetime(start_timestamp, 'unixepoch', '-3 hours')) = ?
+            """
+            cursor.execute(query, (target_date,))
+        else:
+            print(f"\n🔍 Buscando TODOS os jogos pendentes...")
+            now_ts = int(datetime.now().timestamp())
+            query = """
+                SELECT match_id, home_team_name, away_team_name, status, start_timestamp 
+                FROM matches 
+                WHERE status != 'finished' AND start_timestamp < ?
+            """
+            cursor.execute(query, (now_ts,))
+        
+        matches_to_update = cursor.fetchall()
+        
+        if not matches_to_update:
+            print("✅ Nenhum jogo pendente encontrado.")
+            return
+        
+        print(f"📊 Encontrados {len(matches_to_update)} jogos para atualizar.")
+        
+        scraper.start()
+        updated_count = 0
+        stats_updated = 0
+        
+        for match in matches_to_update:
+            match_id, home, away, current_status, start_ts = match
+            print(f"\n🔄 [{match_id}] {home} vs {away} [{current_status}]")
+            
+            # A. Buscar detalhes atualizados
+            details = scraper.get_match_details(match_id)
+            if not details:
+                print(f"   ⚠️ Sem dados para {match_id}")
+                continue
+            
+            new_status = details['status']
+            print(f"   Status: {current_status} → {new_status}")
+            
+            db.save_match(details)
+            updated_count += 1
+            
+            # B. Se finalizado ou ao vivo, buscar estatísticas
+            if new_status in ('finished', 'inprogress'):
+                print(f"   📊 Buscando estatísticas...")
+                stats = scraper.get_match_stats(match_id)
+                
+                if stats.get('corners_home_ft', 0) == 0 and stats.get('corners_away_ft', 0) == 0:
+                    print(f"   ⚠️ Stats vazias (possível delay da fonte).")
+                else:
+                    c_h = stats.get('corners_home_ft', 0)
+                    c_a = stats.get('corners_away_ft', 0)
+                    xg_h = stats.get('expected_goals_home', 0)
+                    xg_a = stats.get('expected_goals_away', 0)
+                    print(f"   ✅ Corners: {c_h}-{c_a} | xG: {xg_h}-{xg_a}")
+                
+                db.save_stats(match_id, stats)
+                stats_updated += 1
+        
+        # C. Verificar predições (GREEN/RED)
+        print(f"\n{'='*50}")
+        print(f"📋 Resumo: {updated_count} atualizados | {stats_updated} com stats")
+        print(f"{'='*50}")
+        
+        print("\n🎯 Verificando predições (GREEN/RED)...")
+        db.check_predictions()
+        
+        # D. Mostrar resultados para a data
+        if target_date:
+            cursor.execute("""
+                SELECT p.match_id, m.home_team_name, m.away_team_name, 
+                       p.prediction_label, p.confidence, p.status,
+                       s.corners_home_ft, s.corners_away_ft
+                FROM predictions p
+                JOIN matches m ON p.match_id = m.match_id
+                LEFT JOIN match_stats s ON m.match_id = s.match_id
+                WHERE DATE(datetime(m.start_timestamp, 'unixepoch', '-3 hours')) = ?
+                  AND p.category IN ('Main', 'Top7')
+                ORDER BY p.category DESC, p.confidence DESC
+            """, (target_date,))
+            pred_rows = cursor.fetchall()
+            
+            if pred_rows:
+                print(f"\n{'='*70}")
+                print(f"🎯 RESULTADOS DAS PREDIÇÕES - {target_date}")
+                print(f"{'='*70}")
+                
+                greens = 0
+                reds = 0
+                pending = 0
+                
+                for row in pred_rows:
+                    mid, home, away, label, conf, status, c_h, c_a = row
+                    c_h = c_h or '?'
+                    c_a = c_a or '?'
+                    total = f"{c_h}+{c_a}={int(c_h)+int(c_a)}" if isinstance(c_h, int) and isinstance(c_a, int) else f"{c_h}+{c_a}"
+                    
+                    if status == 'GREEN':
+                        icon = f"{Colors.GREEN}✅ GREEN{Colors.RESET}"
+                        greens += 1
+                    elif status == 'RED':
+                        icon = f"{Colors.RED}❌ RED{Colors.RESET}"
+                        reds += 1
+                    else:
+                        icon = "⏳ PENDING"
+                        pending += 1
+                    
+                    print(f"  {icon} | {home} vs {away} | {label} ({conf*100:.0f}%) | Corners: {total}")
+                
+                total_resolved = greens + reds
+                if total_resolved > 0:
+                    wr = greens / total_resolved * 100
+                    print(f"\n  📊 Win Rate: {greens}/{total_resolved} = {wr:.0f}%")
+                if pending > 0:
+                    print(f"  ⏳ Pendentes: {pending}")
+                print(f"{'='*70}")
+        
+        print("\n✅ Atualização concluída!")
+        
+    except Exception as e:
+        print(f"❌ Erro: {e}")
+        traceback.print_exc()
+    finally:
+        try:
+            scraper.stop()
+        except:
+            pass
+        db.close()
+
+
 def manage_users_cli():
     """Menu de usuários."""
     db = DBManager()
@@ -399,6 +573,7 @@ def run_cli():
         print("10. 🧹 Limpar Histórico (Remover GREEN/RED)")
         print(f"{Colors.YELLOW}11. 👤 Gerenciar Usuários{Colors.RESET}")
         print(f"{Colors.RED}12. 💣 RESET TOTAL (Zerar Apostas e Bancas){Colors.RESET}")
+        print(f"{Colors.CYAN}13. 🔄 Atualizar Resultados Pendentes (por Data){Colors.RESET}")
         print("0. Sair")
         
         choice = input("\nEscolha uma opção: ")
@@ -425,6 +600,7 @@ def run_cli():
                 db = DBManager()
                 db.reset_all_betting_history()
                 db.close()
+        elif choice == '13': update_pending_by_date()
         elif choice == '0':
             print("Saindo...")
             break
