@@ -104,14 +104,38 @@ def create_advanced_features(df: pd.DataFrame, window_short: int = 3, window_lon
     
     # Home Stats
     # Home Stats
-    # Colunas: match_id, start_ts, tourn_id, team_id, opp_id, corners, shots, goals, goals_conceded, corners_ht, corners_conceded_cantos, da, blocked, crosses, tackles, interc, clearances, recov, is_home
-    df_home = df[['match_id', 'start_timestamp', 'tournament_id', 'home_team_id', 'away_team_id', 'corners_home_ft', 'shots_ot_home_ft', 'home_score', 'away_score', 'corners_home_ht', 'corners_away_ft', 'dangerous_attacks_home', 'blocked_shots_home', 'crosses_home', 'tackles_home', 'interceptions_home', 'clearances_home', 'recoveries_home']].copy()
-    df_home.columns = ['match_id', 'start_timestamp', 'tournament_id', 'team_id', 'opponent_id', 'corners', 'shots', 'goals', 'goals_conceded', 'corners_ht', 'corners_conceded', 'dangerous_attacks', 'blocked_shots', 'crosses', 'tackles', 'interceptions', 'clearances', 'recoveries']
+    # Colunas: match_id, start_ts, tourn_id, team_id, opp_id, corners, shots, goals, goals_conceded, corners_ht, corners_conceded_cantos, da, blocked, crosses, tackles, interc, clearances, recov, xg, possession, is_home
+    home_cols = ['match_id', 'start_timestamp', 'tournament_id', 'home_team_id', 'away_team_id', 'corners_home_ft', 'shots_ot_home_ft', 'home_score', 'away_score', 'corners_home_ht', 'corners_away_ft', 'dangerous_attacks_home', 'blocked_shots_home', 'crosses_home', 'tackles_home', 'interceptions_home', 'clearances_home', 'recoveries_home']
+    home_names = ['match_id', 'start_timestamp', 'tournament_id', 'team_id', 'opponent_id', 'corners', 'shots', 'goals', 'goals_conceded', 'corners_ht', 'corners_conceded', 'dangerous_attacks', 'blocked_shots', 'crosses', 'tackles', 'interceptions', 'clearances', 'recoveries']
+    
+    # Add xG and possession if available in DataFrame
+    has_xg = 'expected_goals_home' in df.columns and 'expected_goals_away' in df.columns
+    has_possession = 'possession_home' in df.columns and 'possession_away' in df.columns
+    
+    if has_xg:
+        home_cols.append('expected_goals_home')
+        home_names.append('xg')
+    if has_possession:
+        home_cols.append('possession_home')
+        home_names.append('possession')
+    
+    df_home = df[home_cols].copy()
+    df_home.columns = home_names
     df_home['is_home'] = 1
     
     # Away Stats
-    df_away = df[['match_id', 'start_timestamp', 'tournament_id', 'away_team_id', 'home_team_id', 'corners_away_ft', 'shots_ot_away_ft', 'away_score', 'home_score', 'corners_away_ht', 'corners_home_ft', 'dangerous_attacks_away', 'blocked_shots_away', 'crosses_away', 'tackles_away', 'interceptions_away', 'clearances_away', 'recoveries_away']].copy()
-    df_away.columns = ['match_id', 'start_timestamp', 'tournament_id', 'team_id', 'opponent_id', 'corners', 'shots', 'goals', 'goals_conceded', 'corners_ht', 'corners_conceded', 'dangerous_attacks', 'blocked_shots', 'crosses', 'tackles', 'interceptions', 'clearances', 'recoveries']
+    away_cols = ['match_id', 'start_timestamp', 'tournament_id', 'away_team_id', 'home_team_id', 'corners_away_ft', 'shots_ot_away_ft', 'away_score', 'home_score', 'corners_away_ht', 'corners_home_ft', 'dangerous_attacks_away', 'blocked_shots_away', 'crosses_away', 'tackles_away', 'interceptions_away', 'clearances_away', 'recoveries_away']
+    away_names = ['match_id', 'start_timestamp', 'tournament_id', 'team_id', 'opponent_id', 'corners', 'shots', 'goals', 'goals_conceded', 'corners_ht', 'corners_conceded', 'dangerous_attacks', 'blocked_shots', 'crosses', 'tackles', 'interceptions', 'clearances', 'recoveries']
+    
+    if has_xg:
+        away_cols.append('expected_goals_away')
+        away_names.append('xg')
+    if has_possession:
+        away_cols.append('possession_away')
+        away_names.append('possession')
+    
+    df_away = df[away_cols].copy()
+    df_away.columns = away_names
     df_away['is_home'] = 0
     
     # Stack de todos os jogos na visão do time
@@ -136,6 +160,12 @@ def create_advanced_features(df: pd.DataFrame, window_short: int = 3, window_lon
     # NOTE: 'momentum' and 'momentum_conceded' REMOVED (97.6% of raw DB values are 0.0,
     # causing EMA/std to produce nonsensical values >1000 when mixing zeros with real values).
     # See: match_stats table — only 299/12655 matches have non-zero momentum data.
+    
+    # V11: Add xG and possession if available (79.2% and 99.8% coverage respectively)
+    if has_xg:
+        feature_cols.append('xg')
+    if has_possession:
+        feature_cols.append('possession')
     
     # --- A. Features Temporais (Rest Days) ---
     team_stats['prev_timestamp'] = grouped['start_timestamp'].shift(1)
@@ -492,6 +522,20 @@ def create_advanced_features(df: pd.DataFrame, window_short: int = 3, window_lon
     df_features['home_pressure_index'] = df_features['home_avg_dangerous_attacks_general'] + (df_features['home_avg_shots_general'] * 2)
     df_features['away_pressure_index'] = df_features['away_avg_dangerous_attacks_general'] + (df_features['away_avg_shots_general'] * 2)
     
+    # --- 9. V11 FEATURES (xG & Possession — Scientific Enhancement) ---
+    # xG: strong monotonic correlation with corners (+16% across quartiles)
+    # Possession: non-linear relationship — moderate possession (~55-60%) correlates with highest corners
+    if has_xg:
+        # xG differential: which team creates more quality chances?
+        df_features['xg_differential'] = df_features['home_ema_xg_5g'] - df_features['away_ema_xg_5g']
+        # xG per corner: how many expected goals per corner? (efficiency proxy)
+        df_features['home_xg_per_corner'] = df_features['home_ema_xg_5g'] / (df_features['home_avg_corners_general'] + 0.1)
+        df_features['away_xg_per_corner'] = df_features['away_ema_xg_5g'] / (df_features['away_avg_corners_general'] + 0.1)
+    
+    if has_possession:
+        # Possession differential
+        df_features['possession_diff'] = df_features['home_ema_possession_5g'] - df_features['away_ema_possession_5g']
+    
     df_features['tournament_id'] = df_features['tournament_id'].astype('category')
     
     # --- 6. Novas Features V4 ---
@@ -540,13 +584,21 @@ def create_advanced_features(df: pd.DataFrame, window_short: int = 3, window_lon
     
     dynamic_features = []
     
-    # Core Metrics (9 metricas de alto sinal)
+    # Core Metrics (high-signal metrics for dynamic EMA/std features)
     core_metrics = [
         'corners', 'shots', 'goals', 'corners_conceded', 'dangerous_attacks',
         'blocked_shots', 'crosses'
     ]
     # NOTE: 'momentum' and 'momentum_conceded' REMOVED from core_metrics
     # (same reason as feature_cols: 97.6% zeros in DB)
+    
+    # V11: Add xG and possession to core metrics (79.2% and 99.8% DB coverage)
+    # xG: strong monotonic correlation with corners (8.84→10.26 avg corners, +16%)
+    # Possession: 99.8% coverage, captures tactical dominance patterns
+    if has_xg:
+        core_metrics.append('xg')
+    if has_possession:
+        core_metrics.append('possession')
     
     for team in ['home', 'away']:
         for metric in core_metrics:
@@ -609,6 +661,17 @@ def create_advanced_features(df: pd.DataFrame, window_short: int = 3, window_lon
         'expected_corners_poisson_home', 'expected_corners_poisson_away',
         'ppg_differential',
     ]
+    
+    # V11 Features (xG & Possession — conditionally added)
+    if has_xg:
+        static_features.extend([
+            'xg_differential',
+            'home_xg_per_corner', 'away_xg_per_corner',
+        ])
+    if has_possession:
+        static_features.extend([
+            'possession_diff',
+        ])
 
     # 3. Métricas de Exibição (Separate from Model Features)
     # These are used for UI/Feedback explanation, NOT for training the model.

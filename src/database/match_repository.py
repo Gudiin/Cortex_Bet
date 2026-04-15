@@ -168,7 +168,11 @@ class MatchRepository:
                    s.tackles_home, s.tackles_away,
                    s.interceptions_home, s.interceptions_away,
                    s.clearances_home, s.clearances_away,
-                   s.recoveries_home, s.recoveries_away
+                   s.recoveries_home, s.recoveries_away,
+                   COALESCE(s.expected_goals_home, 0.0) as expected_goals_home,
+                   COALESCE(s.expected_goals_away, 0.0) as expected_goals_away,
+                   COALESCE(s.possession_home, 0) as possession_home,
+                   COALESCE(s.possession_away, 0) as possession_away
             FROM matches m
             JOIN match_stats s ON m.match_id = s.match_id
             WHERE m.status = 'finished'

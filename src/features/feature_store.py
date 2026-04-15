@@ -116,6 +116,10 @@ class FeatureStore:
                     "corners_away_ht": 0,
                     "dangerous_attacks_home": 0,
                     "dangerous_attacks_away": 0,
+                    "expected_goals_home": 0.0,
+                    "expected_goals_away": 0.0,
+                    "possession_home": 0,
+                    "possession_away": 0,
                     "tournament_id": last_tournament_id,
                     "tournament_name": "Prediction",
                 }

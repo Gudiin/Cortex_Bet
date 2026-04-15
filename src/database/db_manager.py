@@ -527,7 +527,11 @@ class DBManager:
                    s.tackles_home, s.tackles_away,
                    s.interceptions_home, s.interceptions_away,
                    s.clearances_home, s.clearances_away,
-                   s.recoveries_home, s.recoveries_away
+                   s.recoveries_home, s.recoveries_away,
+                   COALESCE(s.expected_goals_home, 0.0) as expected_goals_home,
+                   COALESCE(s.expected_goals_away, 0.0) as expected_goals_away,
+                   COALESCE(s.possession_home, 0) as possession_home,
+                   COALESCE(s.possession_away, 0) as possession_away
             FROM matches m
             JOIN match_stats s ON m.match_id = s.match_id
             WHERE m.status = 'finished'
@@ -679,19 +683,24 @@ class DBManager:
             h_corners_ht = h_corners_ht or 0
             a_corners_ht = a_corners_ht or 0
             
-            # Determina qual valor usar baseado no market_group
+            # Determina qual valor usar baseado no market_group E no prediction_label
+            # market_group pode ser: "Vis.", "Casa", "1T", "2T", "Total", etc.
+            # prediction_label pode ser: "Vis. Over 3.5", "Casa Under 5.5", "1T Over 2.5", etc.
+            import re
             market_group_lower = (market_group or '').lower()
+            label_lower = (pred_label or '').lower()
+            combined = f"{market_group_lower} {label_lower}"
             
-            if 'mandante' in market_group_lower or 'home' in market_group_lower:
+            if re.search(r'\b(mandante|casa|home)\b', combined):
                 # Total Mandante: usa apenas escanteios do time da casa
                 corners_value = h_corners_ft
-            elif 'visitante' in market_group_lower or 'away' in market_group_lower:
+            elif re.search(r'\b(visitante|away)\b', combined) or 'vis.' in combined or 'vis ' in combined:
                 # Total Visitante: usa apenas escanteios do visitante
                 corners_value = a_corners_ft
-            elif '1' in market_group_lower or 'ht' in market_group_lower or 'primeiro' in market_group_lower:
+            elif re.search(r'\b(1t|1h|ht|primeiro)\b', combined):
                 # 1º Tempo: usa soma dos escanteios do 1º tempo
                 corners_value = h_corners_ht + a_corners_ht
-            elif '2' in market_group_lower or 'segundo' in market_group_lower:
+            elif re.search(r'\b(2t|2h|segundo)\b', combined):
                 # 2º Tempo: usa diferença (FT - HT)
                 corners_value = (h_corners_ft - h_corners_ht) + (a_corners_ft - a_corners_ht)
             else:
@@ -705,7 +714,6 @@ class DBManager:
             # Busca número APÓS a palavra Over/Under para evitar pegar "1" de "1T"
             line = None
             if pred_label:
-                import re
                 # Primeiro tenta pegar número após Over/Under
                 match = re.search(r'(?:over|under)\s*(\d+\.?\d*)', pred_label.lower())
                 if match:
