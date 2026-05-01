@@ -201,17 +201,44 @@ def scan_opportunities() -> None:
     print("1. Hoje")
     print("2. Amanhã")
     print("3. Data específica (AAAA-MM-DD)")
+    print("4. Intervalo de datas (AAAA-MM-DD até AAAA-MM-DD)")
     
     date_choice = input("Escolha: ").strip()
     now_brt = datetime.now(brt)
-    if date_choice == '1': target_date = now_brt.strftime('%Y-%m-%d')
-    elif date_choice == '2': target_date = (now_brt + timedelta(days=1)).strftime('%Y-%m-%d')
-    elif date_choice == '3': target_date = input("Digite a data (AAAA-MM-DD): ").strip()
+    
+    target_dates = []
+    
+    # Processamento da escolha do menu
+    if date_choice == '1': 
+        target_dates.append(now_brt.strftime('%Y-%m-%d'))
+    elif date_choice == '2': 
+        target_dates.append((now_brt + timedelta(days=1)).strftime('%Y-%m-%d'))
+    elif date_choice == '3': 
+        target_dates.append(input("Digite a data (AAAA-MM-DD): ").strip())
+    elif date_choice == '4':
+        start_str = input("Data inicial (AAAA-MM-DD): ").strip()
+        end_str = input("Data final (AAAA-MM-DD): ").strip()
+        try:
+            start_dt = datetime.strptime(start_str, '%Y-%m-%d')
+            end_dt = datetime.strptime(end_str, '%Y-%m-%d')
+            
+            if start_dt > end_dt:
+                print("❌ A data inicial não pode ser maior que a data final.")
+                return
+                
+            # Gera a lista de todas as datas dentro do intervalo
+            delta = end_dt - start_dt
+            for i in range(delta.days + 1):
+                day = start_dt + timedelta(days=i)
+                target_dates.append(day.strftime('%Y-%m-%d'))
+                
+        except ValueError:
+            print("❌ Formato de data inválido. Certifique-se de usar AAAA-MM-DD.")
+            return
     else:
         print("❌ Opção inválida.")
         return
     
-    print(f"\n🔍 Buscando jogos para {target_date}...")
     db = DBManager()
     predictor = ProfessionalPredictor()
     
@@ -220,20 +247,35 @@ def scan_opportunities() -> None:
         db.close()
         return
     
+    all_results = []
+    
     try:
-        results = scan_opportunities_core(date_str=target_date, db=db, verbose=True)
-        if results:
+        # Loop sobre todas as datas selecionadas (1 ou mais)
+        for target_date in target_dates:
+            print(f"\n🔍 Buscando jogos para {target_date}...")
+            # Presumindo que scan_opportunities_core retorna uma lista de dicionários
+            day_results = scan_opportunities_core(date_str=target_date, db=db, verbose=True)
+            if day_results:
+                all_results.extend(day_results)
+                
+        # Exibição unificada de todos os resultados encontrados
+        if all_results:
             print("\n" + "=" * 70)
-            print(f"📈 RESUMO - {len(results)} oportunidades (salvas no banco):")
+            interval_label = f"{target_dates[0]}" if len(target_dates) == 1 else f"{target_dates[0]} até {target_dates[-1]}"
+            print(f"📈 RESUMO FINAL ({interval_label}) - {len(all_results)} oportunidades:")
             print("=" * 70)
-            sorted_ops = sorted(results, key=lambda x: x['confidence'], reverse=True)
+            
+            # Ordena globalmente pela confiança (maior para menor)
+            sorted_ops = sorted(all_results, key=lambda x: x['confidence'], reverse=True)
+            
             for i, op in enumerate(sorted_ops, 1):
                 conf_color = Colors.GREEN if op['confidence'] > 0.70 else Colors.YELLOW
                 print(f"{i}. [{op['match_id']}] {op['match']}")
                 print(f"   📊 {op['prediction']:.1f} esc | {conf_color}{op['confidence']*100:.0f}%{Colors.RESET} | {op['bet']} | [{op['league']}]")
             print("-" * 70)
         else:
-            print("\n❌ Nenhuma oportunidade encontrada.")
+            print("\n❌ Nenhuma oportunidade encontrada no período.")
+            
     except Exception as e:
         print(f"❌ Erro no scanner: {e}")
         traceback.print_exc()
