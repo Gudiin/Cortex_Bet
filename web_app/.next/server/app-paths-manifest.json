@@ -1,4 +1,5 @@
 {
+  "/api/validate-bets/route": "app/api/validate-bets/route.js",
   "/api/system-status/route": "app/api/system-status/route.js",
   "/api/scanner/control/route": "app/api/scanner/control/route.js",
   "/page": "app/page.js",

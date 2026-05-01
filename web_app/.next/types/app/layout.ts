@@ -1,4 +1,4 @@
-// File: C:\github\Cortex_Bet\web_app\app\layout.tsx
+// File: C:\Users\Valmont\Documents\GitHub\Cortex_Bet\Cortex_Bet\web_app\app\layout.tsx
 import * as entry from '../../../app/layout.js'
 import type { ResolvingMetadata, ResolvingViewport } from 'next/dist/lib/metadata/types/metadata-interface.js'
 
