@@ -18,7 +18,11 @@ interface OpsStatus {
   last_update_pid?: number;
 }
 
-export default function SystemStatus() {
+interface SystemStatusProps {
+  mode?: 'compact' | 'full';
+}
+
+export default function SystemStatus({ mode = 'full' }: SystemStatusProps) {
   const [data, setData] = useState<StatusData | null>(null);
   const [scannerActive, setScannerActive] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -156,6 +160,8 @@ export default function SystemStatus() {
     statusText = "Offline";
   }
 
+  const isCompact = mode === 'compact';
+
   return (
     <div className="flex items-center gap-4">
       {/* Scanner Toggle */}
@@ -177,16 +183,16 @@ export default function SystemStatus() {
         </button>
       </div>
 
-      <button
+      {!isCompact && <button
         onClick={triggerTraining}
         disabled={training}
         className="px-3 py-1.5 text-[10px] uppercase font-bold tracking-wide rounded-full border border-violet-500/30 bg-violet-500/10 text-violet-300 hover:bg-violet-500/20 disabled:opacity-50"
         title="Executa o treino do modelo (equivalente à opção 2 do CLI)"
       >
         {training ? 'Treinando...' : 'Treinar IA'}
-      </button>
+      </button>}
 
-      <div className="flex items-center gap-2 bg-slate-900/50 px-2 py-1 rounded-full border border-slate-800">
+      {!isCompact && <div className="flex items-center gap-2 bg-slate-900/50 px-2 py-1 rounded-full border border-slate-800">
         <input
           type="date"
           value={startDate}
@@ -209,7 +215,7 @@ export default function SystemStatus() {
         >
           {updating ? 'Atualizando...' : 'Atualizar Ligas'}
         </button>
-      </div>
+      </div>}
 
       {/* System Status Indicator */}
       <div className="flex items-center gap-3 px-3 py-1.5 bg-slate-900/50 rounded-full border border-slate-800">
@@ -233,12 +239,12 @@ export default function SystemStatus() {
           </div>
         )}
       </div>
-      <div className="flex flex-col gap-1 text-[10px] text-slate-400 bg-slate-900/40 border border-slate-800 rounded-lg px-2 py-1">
+      {!isCompact && <div className="flex flex-col gap-1 text-[10px] text-slate-400 bg-slate-900/40 border border-slate-800 rounded-lg px-2 py-1">
         <span>Últ. treino: {opsStatus?.last_training_at ? new Date(opsStatus.last_training_at).toLocaleString() : 'N/A'}</span>
         <span>Últ. scanner: {opsStatus?.last_scanner_at ? `${opsStatus.last_scanner_action || ''} em ${new Date(opsStatus.last_scanner_at).toLocaleString()}` : 'N/A'}</span>
         <span>Últ. atualização: {opsStatus?.last_update_at ? `${opsStatus.last_update_range || ''} em ${new Date(opsStatus.last_update_at).toLocaleString()}` : 'N/A'}</span>
         {feedback && <span className="text-emerald-300">{feedback}</span>}
-      </div>
+      </div>}
     </div>
   );
 }

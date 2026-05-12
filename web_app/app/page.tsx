@@ -29,7 +29,7 @@ interface User {
 
 export default function Dashboard() {
   const [user, setUser] = useState<User | null>(null);
-  const [activeTab, setActiveTab] = useState<'scanner' | 'performance' | 'bankroll' | 'league'>('scanner');
+  const [activeTab, setActiveTab] = useState<'scanner' | 'performance' | 'bankroll' | 'league' | 'operations'>('scanner');
   const [filters, setFilters] = useState<FilterState>({
     date: 'today',
     league: 'all',
@@ -126,7 +126,7 @@ export default function Dashboard() {
               </div>
               
               <div className="hidden md:flex items-center gap-4">
-                <SystemStatus />
+                <SystemStatus mode="compact" />
                 
                 {/* LABS TOGGLE (Hardcoded into page header) */}
                 <ShadowModeToggle />
@@ -193,6 +193,16 @@ export default function Dashboard() {
             >
               Tipster League
             </button>
+            <button
+              onClick={() => setActiveTab('operations')}
+              className={`px-3 lg:px-4 py-2 text-xs lg:text-sm font-medium rounded-md transition-all whitespace-nowrap ${
+                activeTab === 'operations' 
+                  ? 'bg-blue-600 text-white shadow-lg' 
+                  : 'text-slate-400 hover:text-white hover:bg-slate-800'
+              }`}
+            >
+              Operações
+            </button>
           </nav>
         </div>
       </header>
@@ -247,6 +257,15 @@ export default function Dashboard() {
         {activeTab === 'league' && (
           <div className="animate-in fade-in duration-500">
             <Leaderboard />
+          </div>
+        )}
+
+        {activeTab === 'operations' && (
+          <div className="animate-in fade-in duration-500">
+            <div className="bg-slate-900/40 rounded-2xl border border-slate-800 p-4">
+              <h3 className="text-white font-bold mb-3">Operações (Treino, Scanner e Atualização)</h3>
+              <SystemStatus mode="full" />
+            </div>
           </div>
         )}
       </main>
