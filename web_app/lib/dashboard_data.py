@@ -361,105 +361,34 @@ class DashboardDataProvider:
         }
     
     def _get_recent_form(self, cursor, team_name, home_or_away):
-        """Get recent 5 games for a team"""
-        if home_or_away == 'all':
-            query = """
-                SELECT s.corners_home_ft, s.corners_away_ft, m.home_team_name
-                FROM matches m
-                JOIN match_stats s ON m.match_id = s.match_id
-                WHERE (m.home_team_name = ? OR m.away_team_name = ?)
-                  AND m.status = 'finished'
-                ORDER BY m.start_timestamp DESC
-                LIMIT 5
-            """
-            cursor.execute(query, [team_name, team_name])
-            rows = cursor.fetchall()
-            
-            games = []
-            for row in rows:
-                # If team was home, take home corners, else away corners
-                # row[2] is home_team_name
-                is_home = (row[2] == team_name)
-                games.append(row[0] if is_home else row[1])
-        else:
-            query = """
-                SELECT s.corners_home_ft, s.corners_away_ft
-                FROM matches m
-                JOIN match_stats s ON m.match_id = s.match_id
-                WHERE (m.home_team_name = ? OR m.away_team_name = ?)
-                  AND m.status = 'finished'
-                ORDER BY m.start_timestamp DESC
-                LIMIT 5
-            """
-            cursor.execute(query, [team_name, team_name])
-            rows = cursor.fetchall()
-            
-            games = []
-            for row in rows:
-                # Determine if team was home or away to filter specifically
-                # This logic in original code was slightly flawed if query returns both, 
-                # but we'll stick to 'all' logic for now or refine.
-                # Actually, original code appended based on 'home_or_away' arg passed to function
-                # which implies we filter the *matches* where they were home/away?
-                # The original query selects WHERE home OR away, so it gets all matches.
-                # Then it blindly took row[0] (home corners) if home_or_away=='home'. 
-                # This is only correct if the query ONLY returned home games.
-                # BUT the query has "WHERE (home=? OR away=?)", so it returns ALL games.
-                # So if home_or_away='home', it takes home corners of AWAY games too? That's a bug in previous code.
-                # Let's fix it properly for 'all', 'home', 'away'.
-                pass
-            
-            # Re-implementing correctly:
-            games = []
-            for row in rows:
-                 # We need to know if they were home or away in this specific match row
-                 # But the original query didn't select team names.
-                 # Let's just implement the 'all' branch cleanly and patch the 'home/away' calls to use the better query.
-                 pass
+        """Get recent form for a team.
 
-        # corrected implementation with HT/ST data and variance
-        query = ""
-        params = []
-        
-        if home_or_away == 'home':
-            query = """
-                SELECT s.corners_home_ft, s.corners_away_ft, m.home_team_name,
-                       s.corners_home_ht, s.corners_away_ht
-                FROM matches m
-                JOIN match_stats s ON m.match_id = s.match_id
-                WHERE m.home_team_name = ?
-                  AND m.status = 'finished'
-                ORDER BY m.start_timestamp DESC
-                LIMIT 5
-            """
-            params = [team_name]
+        Important business rule:
+        - `home` and `away` forms are derived from the same *recent timeline* as `all`,
+          instead of pulling independent "last 5 home" or "last 5 away" across long history.
+          This keeps values consistent with the visible recent form context.
+        """
+        query = """
+            SELECT s.corners_home_ft, s.corners_away_ft, m.home_team_name,
+                   s.corners_home_ht, s.corners_away_ht
+            FROM matches m
+            JOIN match_stats s ON m.match_id = s.match_id
+            WHERE (m.home_team_name = ? OR m.away_team_name = ?)
+              AND m.status = 'finished'
+            ORDER BY m.start_timestamp DESC
+            LIMIT 15
+        """
+        cursor.execute(query, [team_name, team_name])
+        all_recent_rows = cursor.fetchall()
+
+        if home_or_away == 'all':
+            rows = all_recent_rows[:5]
+        elif home_or_away == 'home':
+            rows = [r for r in all_recent_rows if r[2] == team_name][:5]
         elif home_or_away == 'away':
-            query = """
-                SELECT s.corners_home_ft, s.corners_away_ft, m.home_team_name,
-                       s.corners_home_ht, s.corners_away_ht
-                FROM matches m
-                JOIN match_stats s ON m.match_id = s.match_id
-                WHERE m.away_team_name = ?
-                  AND m.status = 'finished'
-                ORDER BY m.start_timestamp DESC
-                LIMIT 5
-            """
-            params = [team_name]
-        else: # 'all'
-            query = """
-                SELECT s.corners_home_ft, s.corners_away_ft, m.home_team_name,
-                       s.corners_home_ht, s.corners_away_ht
-                FROM matches m
-                JOIN match_stats s ON m.match_id = s.match_id
-                WHERE (m.home_team_name = ? OR m.away_team_name = ?)
-                  AND m.status = 'finished'
-                ORDER BY m.start_timestamp DESC
-                LIMIT 5
-            """
-            params = [team_name, team_name]
-        
-        cursor.execute(query, params)
-        rows = cursor.fetchall()
+            rows = [r for r in all_recent_rows if r[2] != team_name][:5]
+        else:
+            rows = []
         
         games_ft = []  # Full time
         games_ht = []  # Half time
@@ -467,10 +396,6 @@ class DashboardDataProvider:
         
         for row in rows:
             is_home_team = (row[2] == team_name)
-            
-            # If we are looking for specific form, we already filtered by SQL, so we just take the correct column.
-            # However, for 'all', we need to check is_home_team to know which column to take.
-            # Even for specific, checking is_home_team is safer/cleaner.
             
             ft = row[0] if is_home_team else row[1]
             ht = row[3] if is_home_team else row[4]

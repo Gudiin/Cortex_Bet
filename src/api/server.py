@@ -4,6 +4,8 @@ from pathlib import Path
 import subprocess
 import sys
 from typing import Any, Dict
+import json
+from datetime import datetime, timezone
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -16,6 +18,7 @@ from src.analysis.manager_ai import ManagerAI
 from src.analysis.unified_scanner import scan_opportunities_core
 from src.database.db_manager import DBManager
 from src.monitoring.model_health import get_model_health_snapshot
+from src.data.updater import update_all_leagues_by_date_range_values
 from src.web.bankroll_api import (
     auth_user,
     delete_bet,
@@ -64,6 +67,11 @@ class ScannerControlRequest(BaseModel):
     action: str
 
 
+class UpdateRangeRequest(BaseModel):
+    start_date: str
+    end_date: str
+
+
 def _open_db_cursor() -> tuple[DBManager, Any, Any]:
     """Create DBManager, connection, and cursor for API operations."""
     db = DBManager()
@@ -75,6 +83,24 @@ def _open_db_cursor() -> tuple[DBManager, Any, Any]:
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 SCANNER_PID_FILE = PROJECT_ROOT / "web_app" / ".scanner.pid"
 SCANNER_SCRIPT = PROJECT_ROOT / "scripts" / "quick_scan.py"
+TRAIN_SCRIPT = PROJECT_ROOT / "scripts" / "train_model.py"
+OPS_STATUS_FILE = PROJECT_ROOT / "data" / "ops_status.json"
+
+
+def _load_ops_status() -> Dict[str, Any]:
+    if not OPS_STATUS_FILE.exists():
+        return {}
+    try:
+        return json.loads(OPS_STATUS_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _save_ops_status(patch: Dict[str, Any]) -> None:
+    current = _load_ops_status()
+    current.update(patch)
+    OPS_STATUS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    OPS_STATUS_FILE.write_text(json.dumps(current, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def _is_pid_running(pid: int) -> bool:
@@ -415,12 +441,92 @@ async def post_scanner_control(request: ScannerControlRequest) -> Dict[str, Any]
             return {"message": "Scanner already running", "status": "running", "pid": pid}
 
         new_pid = _start_scanner_loop_process()
+        _save_ops_status(
+            {
+                "last_scanner_action": "start",
+                "last_scanner_pid": int(new_pid),
+                "last_scanner_at": datetime.now(timezone.utc).isoformat(),
+            }
+        )
         return {"message": "Scanner started", "status": "started", "pid": new_pid}
 
     if pid:
         _stop_scanner_loop_process(pid)
+    _save_ops_status(
+        {
+            "last_scanner_action": "stop",
+            "last_scanner_pid": int(pid) if pid else None,
+            "last_scanner_at": datetime.now(timezone.utc).isoformat(),
+        }
+    )
     _remove_scanner_pid_file()
     return {"message": "Scanner stopped", "status": "stopped"}
+
+
+@app.post("/api/training/control")
+async def post_training_control() -> Dict[str, Any]:
+    """Trigger model training (equivalent to CLI option 2) in background."""
+    python_executable = sys.executable
+    try:
+        process = subprocess.Popen(
+            [python_executable, str(TRAIN_SCRIPT)],
+            cwd=str(PROJECT_ROOT),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=(os.name != "nt"),
+        )
+        _save_ops_status(
+            {
+                "last_training_pid": int(process.pid),
+                "last_training_at": datetime.now(timezone.utc).isoformat(),
+            }
+        )
+        return {"message": "Training started", "status": "started", "pid": int(process.pid)}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post("/api/update/all-leagues/date-range")
+async def post_update_all_leagues_date_range(request: UpdateRangeRequest) -> Dict[str, Any]:
+    """Run all-leagues update in background for a provided date range."""
+    try:
+        from datetime import datetime
+        datetime.strptime(request.start_date, "%Y-%m-%d")
+        datetime.strptime(request.end_date, "%Y-%m-%d")
+        if request.start_date > request.end_date:
+            raise HTTPException(status_code=400, detail="start_date must be <= end_date")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD") from exc
+
+    python_executable = sys.executable
+    inline = (
+        "from src.data.updater import update_all_leagues_by_date_range_values;"
+        f"update_all_leagues_by_date_range_values('{request.start_date}','{request.end_date}')"
+    )
+    try:
+        process = subprocess.Popen(
+            [python_executable, "-c", inline],
+            cwd=str(PROJECT_ROOT),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=(os.name != "nt"),
+        )
+        _save_ops_status(
+            {
+                "last_update_pid": int(process.pid),
+                "last_update_at": datetime.now(timezone.utc).isoformat(),
+                "last_update_range": f"{request.start_date} -> {request.end_date}",
+            }
+        )
+        return {"message": "All-leagues update started", "status": "started", "pid": int(process.pid)}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.get("/api/ops-status")
+async def get_ops_status() -> Dict[str, Any]:
+    """Return latest operational actions for scanner/training/updater."""
+    return _load_ops_status()
 
 
 @app.get("/api/system-status")

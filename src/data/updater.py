@@ -30,7 +30,12 @@ def load_leagues_config() -> list:
         print(f"Erro ao carregar config de ligas: {e}")
         return []
 
-def update_database(league_name: str = "Brasileirão Série A", season_year: str = "2026") -> None:
+def update_database(
+    league_name: str = "Brasileirão Série A",
+    season_year: str = "2026",
+    start_date: str | None = None,
+    end_date: str | None = None,
+) -> None:
     """Atualiza o banco de dados com inteligência incremental."""
     db = DBManager()
     
@@ -79,6 +84,23 @@ def update_database(league_name: str = "Brasileirão Série A", season_year: str
         matches = scraper.get_matches(t_id, s_id, start_round=start_round)
         print(f"Encontrados {len(matches)} jogos novos/atualizados.")
         
+        # Optional date-range filter (YYYY-MM-DD) based on match startTimestamp
+        if start_date or end_date:
+            start_ts = int(datetime.strptime(start_date, "%Y-%m-%d").timestamp()) if start_date else None
+            end_ts = int(datetime.strptime(end_date, "%Y-%m-%d").timestamp()) if end_date else None
+            filtered_matches = []
+            for m in matches:
+                ts = m.get("startTimestamp")
+                if ts is None:
+                    continue
+                if start_ts is not None and ts < start_ts:
+                    continue
+                if end_ts is not None and ts > end_ts + 86399:
+                    continue
+                filtered_matches.append(m)
+            matches = filtered_matches
+            print(f"🔎 Filtro por data ativo: {start_date or '-'} até {end_date or '-'} | {len(matches)} jogos")
+
         # 3. Process Matches & Stats
         for i, m in enumerate(matches):
             if m['status']['type'] == 'finished':
@@ -201,3 +223,43 @@ def update_all_leagues() -> None:
             update_database(league_name, year)
             
     print("\n✅ Atualização em lote concluída!")
+
+
+def update_all_leagues_by_date_range() -> None:
+    """Atualiza todas as ligas configuradas aplicando filtro por intervalo de datas."""
+    start_date = input("Data inicial (AAAA-MM-DD): ").strip()
+    end_date = input("Data final   (AAAA-MM-DD): ").strip()
+
+    try:
+        datetime.strptime(start_date, "%Y-%m-%d")
+        datetime.strptime(end_date, "%Y-%m-%d")
+    except ValueError:
+        print("❌ Datas inválidas. Use o formato AAAA-MM-DD.")
+        return
+
+    if start_date > end_date:
+        print("❌ Data inicial maior que data final.")
+        return
+
+    update_all_leagues_by_date_range_values(start_date, end_date)
+
+
+def update_all_leagues_by_date_range_values(start_date: str, end_date: str) -> None:
+    """Versão não-interativa para atualização por faixa de datas."""
+    leagues = load_leagues_config()
+    years = ["2023", "2024", "2025", "2026"]
+
+    print(f"🚀 Atualização em lote por intervalo [{start_date} -> {end_date}] para {len(leagues)} ligas...")
+    for league in leagues:
+        league_name = league["torneio"]
+        print(f"\n🏆 Liga: {league_name}")
+        for year in years:
+            print(f"   📅 Temporada {year} com filtro de datas...")
+            update_database(
+                league_name=league_name,
+                season_year=year,
+                start_date=start_date,
+                end_date=end_date,
+            )
+
+    print("\n✅ Atualização em lote por intervalo concluída!")

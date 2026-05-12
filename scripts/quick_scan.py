@@ -18,6 +18,7 @@ import sys
 import os
 import time
 import argparse
+import subprocess
 
 # FIX: Force UTF-8 encoding for Windows Consoles to support emojis
 if sys.platform == 'win32':
@@ -42,6 +43,32 @@ from src.scrapers.sofascore import SofaScoreScraper
 from src.analysis.prediction_validator import PredictionValidator
 from src.analysis.bet_resolver import resolve_pending_bets
 from scripts.cleanup_canceled import cleanup_canceled_matches
+
+LAST_TRAIN_MARKER = Path("data/last_auto_train.txt")
+TRAIN_SCRIPT = Path("scripts/train_model.py")
+
+
+def maybe_trigger_auto_training() -> None:
+    """Trigger background training if 15 days have passed since last automatic run."""
+    now = datetime.now()
+    should_train = True
+    if LAST_TRAIN_MARKER.exists():
+        try:
+            last_train = datetime.fromisoformat(LAST_TRAIN_MARKER.read_text(encoding="utf-8").strip())
+            should_train = (now - last_train).days >= 15
+        except Exception:
+            should_train = True
+
+    if not should_train:
+        return
+
+    try:
+        print("🧠 Auto-training: mais de 15 dias desde o último treino automático. Iniciando...")
+        subprocess.Popen([sys.executable, str(TRAIN_SCRIPT)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        LAST_TRAIN_MARKER.parent.mkdir(parents=True, exist_ok=True)
+        LAST_TRAIN_MARKER.write_text(now.isoformat(), encoding="utf-8")
+    except Exception as exc:
+        print(f"⚠️ Falha ao iniciar auto-training: {exc}")
 
 def run_scan(db, scraper, loop_mode=False):
     try:
@@ -254,6 +281,7 @@ def main():
             print(f"Loop Mode Active (Smart Interval)")
             print("=" * 80)
             while True:
+                maybe_trigger_auto_training()
                 matches = run_scan(db, scraper, loop_mode=True)
                 
                 # Validate predictions periodically
@@ -274,29 +302,29 @@ def main():
                     for m in matches:
                         if m['status'] == 'notstarted':
                             try:
-                                # Convert timestamp (assuming it's unix timestamp from source)
-                                # verify match structure from run_scan -> matches contains raw dicts or processed?
-                                # run_scan currently doesn't return matches. I need to modify run_scan to return them.
-                                pass 
-                            except:
-                                pass
+                                ts = m.get('timestamp')
+                                if ts:
+                                    candidate = datetime.fromtimestamp(int(ts))
+                                    if candidate >= now and (next_start is None or candidate < next_start):
+                                        next_start = candidate
+                            except Exception:
+                                continue
                     
                     # Decide interval
                     if has_live:
                         interval = 60 # Live game? Fast update
                     else:
-                        # Check specific match times if available, otherwise fallback
-                        # Improving run_scan to return match list for analysis
                         interval = args.interval 
-                        
-                        # Just use the improved run_scan return value I will implement momentarily
+
                         upcoming = [m for m in matches if m['status'] == 'notstarted']
                         if upcoming:
-                            # Are any starting soon? (e.g. within 2 hours)
-                            # We need start_time in the match dict.
-                            # Since I need to modify run_scan to return matches first, I'll do that in the next step.
-                            # For now, default logic:
                             interval = 300 # 5 mins default if no live games
+                            if next_start is not None:
+                                mins_to_next = (next_start - now).total_seconds() / 60
+                                if mins_to_next <= 30:
+                                    interval = 60
+                                elif mins_to_next <= 120:
+                                    interval = 180
                         
                         if all(m['status'] == 'finished' for m in matches):
                             interval = 3600 # All done? Sleep 1h

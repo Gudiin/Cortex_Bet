@@ -3,51 +3,230 @@ Módulo de Integração: Odds Reais + Modelo de ML
 
 Este módulo integra o scraper de odds da Superbet com o modelo de ML,
 permitindo a validação do ROI com dados reais de apostas.
-
-Uso:
-    from src.utils.odds_integration import OddsIntegrator
-    
-    integrator = OddsIntegrator()
-    df_with_odds = integrator.fetch_and_validate_odds(urls)
-    roi = integrator.calculate_roi_from_predictions(predictions, df_with_odds)
-
-Autor: Manus AI
-Data: 2025-12-11
 """
 
 import asyncio
-import pandas as pd
-import numpy as np
 import logging
-from typing import Dict, List, Optional, Tuple
-from pathlib import Path
 from datetime import datetime
+from pathlib import Path
+from typing import Dict, List, Optional
 
-# Configurar logging
+import numpy as np
+import pandas as pd
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
 class OddsIntegrator:
-    """
-    Integra odds reais com previsões do modelo de ML.
-    
-    Responsabilidades:
-    1. Fetch de odds (via scraper ou API)
-    2. Validação e limpeza de dados de odds
-    3. Cálculo de ROI baseado em apostas +EV
-    4. Geração de relatórios de performance
-    """
-    
+    """Integra odds reais com previsões do modelo de ML."""
+
     def __init__(self, scraper=None):
-        """
-        Inicializa o integrador.
-        
-        Args:
-            scraper: Instância do SuperbetOddsScraper (opcional)
-        """
         self.scraper = scraper
         self.odds_cache = {}
-    
+
     async def fetch_odds_for_matches(self, match_urls: List[str]) -> pd.DataFrame:
-        \"\"\"\n        Busca odds para uma lista de partidas.\n        \n        Args:\n            match_urls: Lista de URLs de partidas\n        \n        Returns:\n            DataFrame com as odds extraídas\n        \"\"\"\n        if not self.scraper:\n            from src.scrapers.superbet_odds_scraper import SuperbetOddsScraper\n            self.scraper = SuperbetOddsScraper(headless=True)\n        \n        try:\n            df_odds = await self.scraper.extract_odds_batch(match_urls)\n            logger.info(f\"✅ {len(df_odds)} odds obtidas com sucesso.\")\n            return df_odds\n        \n        except Exception as e:\n            logger.error(f\"❌ Erro ao buscar odds: {str(e)}\")\n            return pd.DataFrame()\n    \n    def validate_odds(self, df_odds: pd.DataFrame) -> pd.DataFrame:\n        \"\"\"\n        Valida e limpa dados de odds.\n        \n        Args:\n            df_odds: DataFrame com odds brutos\n        \n        Returns:\n            DataFrame com odds validadas\n        \"\"\"\n        df_clean = df_odds.copy()\n        \n        # Remove linhas com odds inválidas\n        df_clean = df_clean[\n            (df_clean['over_odds'] > 1.0) & \n            (df_clean['under_odds'] > 1.0) &\n            (df_clean['line'].notna())\n        ]\n        \n        # Valida que as odds estão dentro de um intervalo razoável\n        df_clean = df_clean[\n            (df_clean['over_odds'] >= 1.01) & \n            (df_clean['over_odds'] <= 50.0) &\n            (df_clean['under_odds'] >= 1.01) & \n            (df_clean['under_odds'] <= 50.0)\n        ]\n        \n        # Valida que a linha está em um intervalo razoável (0 a 20 escanteios)\n        df_clean = df_clean[\n            (df_clean['line'] >= 0) & \n            (df_clean['line'] <= 20)\n        ]\n        \n        logger.info(f\"✅ {len(df_clean)} odds validadas (removidas {len(df_odds) - len(df_clean)} inválidas).\")\n        \n        return df_clean\n    \n    def merge_predictions_with_odds(\n        self, \n        predictions: np.ndarray, \n        df_odds: pd.DataFrame,\n        y_true: Optional[np.ndarray] = None\n    ) -> pd.DataFrame:\n        \"\"\"\n        Mescla previsões do modelo com dados de odds.\n        \n        Args:\n            predictions: Array com previsões do modelo\n            df_odds: DataFrame com odds\n            y_true: Array com valores reais (opcional, para backtesting)\n        \n        Returns:\n            DataFrame mesclado\n        \"\"\"\n        df_merged = df_odds.copy()\n        df_merged['prediction'] = predictions[:len(df_merged)]\n        \n        if y_true is not None:\n            df_merged['actual'] = y_true[:len(df_merged)]\n        \n        return df_merged\n    \n    def calculate_ev_bets(\n        self, \n        df_merged: pd.DataFrame,\n        margin: float = 0.05\n    ) -> pd.DataFrame:\n        \"\"\"\n        Identifica apostas com Valor Esperado Positivo (+EV).\n        \n        Args:\n            df_merged: DataFrame com previsões e odds\n            margin: Margem de segurança (5% por padrão)\n        \n        Returns:\n            DataFrame com apenas as apostas +EV\n        \"\"\"\n        from scipy.stats import poisson\n        \n        df_ev = df_merged.copy()\n        \n        # Calcula probabilidades do modelo usando Poisson\n        df_ev['model_prob_over'] = df_ev['prediction'].apply(\n            lambda pred: 1 - poisson.cdf(k=df_ev['line'].iloc[0], mu=pred)\n        )\n        \n        df_ev['model_prob_under'] = df_ev['prediction'].apply(\n            lambda pred: poisson.cdf(k=df_ev['line'].iloc[0], mu=pred)\n        )\n        \n        # Calcula probabilidades implícitas das odds\n        df_ev['bookie_prob_over'] = 1 / df_ev['over_odds']\n        df_ev['bookie_prob_under'] = 1 / df_ev['under_odds']\n        \n        # Identifica apostas +EV\n        df_ev['is_over_ev'] = df_ev['model_prob_over'] > df_ev['bookie_prob_over'] * (1 + margin)\n        df_ev['is_under_ev'] = df_ev['model_prob_under'] > df_ev['bookie_prob_under'] * (1 + margin)\n        \n        # Filtra apenas apostas +EV\n        df_ev_only = df_ev[df_ev['is_over_ev'] | df_ev['is_under_ev']].copy()\n        \n        logger.info(f\"✅ {len(df_ev_only)} apostas +EV identificadas de {len(df_ev)} total.\")\n        \n        return df_ev_only\n    \n    def simulate_betting(\n        self,\n        df_ev: pd.DataFrame,\n        stake: float = 1.0\n    ) -> Dict:\n        \"\"\"\n        Simula apostas baseadas nas oportunidades +EV.\n        \n        Args:\n            df_ev: DataFrame com apostas +EV\n            stake: Valor da aposta unitária\n        \n        Returns:\n            Dicionário com estatísticas de betting\n        \"\"\"\n        results = {\n            'total_bets': 0,\n            'total_wins': 0,\n            'total_losses': 0,\n            'total_profit': 0.0,\n            'win_rate': 0.0,\n            'roi': 0.0,\n            'roi_percent': 0.0,\n            'avg_odds': 0.0,\n            'bets': []\n        }\n        \n        if df_ev.empty:\n            logger.warning(\"⚠️ Nenhuma aposta +EV para simular.\")\n            return results\n        \n        total_odds = 0\n        \n        for idx, row in df_ev.iterrows():\n            bet = {\n                'match': row.get('match_name', 'Unknown'),\n                'type': 'Over' if row['is_over_ev'] else 'Under',\n                'line': row['line'],\n                'odds': row['over_odds'] if row['is_over_ev'] else row['under_odds'],\n                'stake': stake,\n            }\n            \n            # Determina resultado (se y_true disponível)\n            if 'actual' in row and pd.notna(row['actual']):\n                actual = row['actual']\n                line = row['line']\n                \n                if bet['type'] == 'Over':\n                    is_win = actual > line\n                else:\n                    is_win = actual <= line\n                \n                bet['result'] = 'WIN' if is_win else 'LOSS'\n                bet['profit'] = (bet['odds'] - 1) * stake if is_win else -stake\n                \n                results['total_bets'] += 1\n                total_odds += bet['odds']\n                \n                if is_win:\n                    results['total_wins'] += 1\n                    results['total_profit'] += bet['profit']\n                else:\n                    results['total_losses'] += 1\n                    results['total_profit'] -= stake\n            \n            results['bets'].append(bet)\n        \n        # Calcula métricas finais\n        if results['total_bets'] > 0:\n            results['win_rate'] = results['total_wins'] / results['total_bets']\n            results['roi'] = results['total_profit'] / (results['total_bets'] * stake)\n            results['roi_percent'] = results['roi'] * 100\n            results['avg_odds'] = total_odds / results['total_bets']\n        \n        return results\n    \n    def generate_report(\n        self,\n        df_merged: pd.DataFrame,\n        betting_results: Dict,\n        output_path: Optional[str] = None\n    ) -> str:\n        \"\"\"\n        Gera um relatório detalhado de performance.\n        \n        Args:\n            df_merged: DataFrame com previsões e odds\n            betting_results: Resultados da simulação de apostas\n            output_path: Caminho para salvar o relatório (opcional)\n        \n        Returns:\n            String com o relatório\n        \"\"\"\n        report = f\"\"\"\n╔════════════════════════════════════════════════════════════════╗\n║           RELATÓRIO DE PERFORMANCE - ODDS REAIS               ║\n╚════════════════════════════════════════════════════════════════╝\n\n📊 ESTATÍSTICAS GERAIS\n─────────────────────────────────────────────────────────────────\nTotal de Partidas Analisadas:  {len(df_merged)}\nApostas +EV Identificadas:     {betting_results['total_bets']}\nTaxa de Cobertura:             {(betting_results['total_bets'] / len(df_merged) * 100):.1f}%\n\n💰 RESULTADOS DE APOSTAS\n─────────────────────────────────────────────────────────────────\nTotal de Apostas:              {betting_results['total_bets']}\nVitórias:                      {betting_results['total_wins']}\nDerrotas:                      {betting_results['total_losses']}\nWin Rate:                      {betting_results['win_rate']:.2%}\n\n📈 RETORNO FINANCEIRO\n─────────────────────────────────────────────────────────────────\nLucro Total:                   {betting_results['total_profit']:+.2f} unidades\nROI (Retorno):                 {betting_results['roi']:+.2f} unidades\nROI (%):                       {betting_results['roi_percent']:+.1f}%\nOdd Média:                     {betting_results['avg_odds']:.2f}\n\n🎯 INTERPRETAÇÃO\n─────────────────────────────────────────────────────────────────\n\"\"\"\n        \n        if betting_results['roi_percent'] > 15:\n            report += \"✅ EXCELENTE! ROI acima de 15%. Modelo tem potencial lucrativo.\\n\"\n        elif betting_results['roi_percent'] > 5:\n            report += \"🟡 BOM! ROI positivo. Modelo é viável com gestão de banca.\\n\"\n        elif betting_results['roi_percent'] > 0:\n            report += \"🟠 MARGINAL. ROI positivo mas baixo. Requer otimização.\\n\"\n        else:\n            report += \"🔴 NEGATIVO. Modelo não é lucrativo. Revisar features/parâmetros.\\n\"\n        \n        report += f\"\"\"\n\n📋 PRÓXIMOS PASSOS\n─────────────────────────────────────────────────────────────────\n1. Validar em dados mais recentes (fora da amostra de treinamento)\n2. Testar em ambiente de paper trading (sem dinheiro real)\n3. Ajustar tamanho de apostas usando Critério de Kelly\n4. Monitorar performance em tempo real\n5. Rebalancear modelo periodicamente com novos dados\n\n═════════════════════════════════════════════════════════════════\nRelatório gerado em: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n═════════════════════════════════════════════════════════════════\n\"\"\"\n        \n        if output_path:\n            Path(output_path).parent.mkdir(parents=True, exist_ok=True)\n            with open(output_path, 'w', encoding='utf-8') as f:\n                f.write(report)\n            logger.info(f\"✅ Relatório salvo em: {output_path}\")\n        \n        return report\n\n\nasync def main():\n    \"\"\"\n    Exemplo de uso do integrador.\n    \"\"\"\n    # Importa o scraper\n    from src.scrapers.superbet_odds_scraper import SuperbetOddsScraper\n    \n    scraper = SuperbetOddsScraper(headless=True)\n    integrator = OddsIntegrator(scraper=scraper)\n    \n    try:\n        # URLs de exemplo (você pode adicionar mais)\n        urls = [\n            \"https://superbet.bet.br/odds/futebol/arsenal-x-wolverhampton-8627842/?t=offer-prematch-106&mdt=o\",\n        ]\n        \n        # Busca odds\n        df_odds = await integrator.fetch_odds_for_matches(urls)\n        \n        if not df_odds.empty:\n            # Valida odds\n            df_odds_clean = integrator.validate_odds(df_odds)\n            \n            # Simula previsões (em produção, viriam do modelo)\n            predictions = np.random.uniform(8, 12, len(df_odds_clean))\n            \n            # Mescla com previsões\n            df_merged = integrator.merge_predictions_with_odds(predictions, df_odds_clean)\n            \n            # Identifica apostas +EV\n            df_ev = integrator.calculate_ev_bets(df_merged)\n            \n            # Simula apostas\n            results = integrator.simulate_betting(df_ev)\n            \n            # Gera relatório\n            report = integrator.generate_report(df_merged, results)\n            print(report)\n    \n    finally:\n        await scraper.close()\n\n\nif __name__ == \"__main__\":\n    asyncio.run(main())\n
+        """Busca odds para uma lista de partidas."""
+        if not self.scraper:
+            from src.scrapers.superbet_odds_scraper import SuperbetOddsScraper
+
+            self.scraper = SuperbetOddsScraper(headless=True)
+
+        try:
+            df_odds = await self.scraper.extract_odds_batch(match_urls)
+            logger.info("✅ %s odds obtidas com sucesso.", len(df_odds))
+            return df_odds
+        except Exception as exc:
+            logger.error("❌ Erro ao buscar odds: %s", exc)
+            return pd.DataFrame()
+
+    def validate_odds(self, df_odds: pd.DataFrame) -> pd.DataFrame:
+        """Valida e limpa dados de odds."""
+        df_clean = df_odds.copy()
+        df_clean = df_clean[
+            (df_clean["over_odds"] > 1.0)
+            & (df_clean["under_odds"] > 1.0)
+            & (df_clean["line"].notna())
+        ]
+        df_clean = df_clean[
+            (df_clean["over_odds"] >= 1.01)
+            & (df_clean["over_odds"] <= 50.0)
+            & (df_clean["under_odds"] >= 1.01)
+            & (df_clean["under_odds"] <= 50.0)
+        ]
+        df_clean = df_clean[(df_clean["line"] >= 0) & (df_clean["line"] <= 20)]
+
+        logger.info(
+            "✅ %s odds validadas (removidas %s inválidas).",
+            len(df_clean),
+            len(df_odds) - len(df_clean),
+        )
+        return df_clean
+
+    def merge_predictions_with_odds(
+        self,
+        predictions: np.ndarray,
+        df_odds: pd.DataFrame,
+        y_true: Optional[np.ndarray] = None,
+    ) -> pd.DataFrame:
+        """Mescla previsões do modelo com dados de odds."""
+        df_merged = df_odds.copy()
+        df_merged["prediction"] = predictions[: len(df_merged)]
+        if y_true is not None:
+            df_merged["actual"] = y_true[: len(df_merged)]
+        return df_merged
+
+    def calculate_ev_bets(self, df_merged: pd.DataFrame, margin: float = 0.05) -> pd.DataFrame:
+        """Identifica apostas com Valor Esperado Positivo (+EV)."""
+        from scipy.stats import poisson
+
+        df_ev = df_merged.copy()
+        df_ev["model_prob_over"] = df_ev.apply(
+            lambda row: 1 - poisson.cdf(k=row["line"], mu=row["prediction"]), axis=1
+        )
+        df_ev["model_prob_under"] = df_ev.apply(
+            lambda row: poisson.cdf(k=row["line"], mu=row["prediction"]), axis=1
+        )
+        df_ev["bookie_prob_over"] = 1 / df_ev["over_odds"]
+        df_ev["bookie_prob_under"] = 1 / df_ev["under_odds"]
+        df_ev["is_over_ev"] = df_ev["model_prob_over"] > df_ev["bookie_prob_over"] * (1 + margin)
+        df_ev["is_under_ev"] = df_ev["model_prob_under"] > df_ev["bookie_prob_under"] * (1 + margin)
+        df_ev_only = df_ev[df_ev["is_over_ev"] | df_ev["is_under_ev"]].copy()
+
+        logger.info("✅ %s apostas +EV identificadas de %s total.", len(df_ev_only), len(df_ev))
+        return df_ev_only
+
+    def simulate_betting(self, df_ev: pd.DataFrame, stake: float = 1.0) -> Dict:
+        """Simula apostas baseadas nas oportunidades +EV."""
+        results = {
+            "total_bets": 0,
+            "total_wins": 0,
+            "total_losses": 0,
+            "total_profit": 0.0,
+            "win_rate": 0.0,
+            "roi": 0.0,
+            "roi_percent": 0.0,
+            "avg_odds": 0.0,
+            "bets": [],
+        }
+        if df_ev.empty:
+            logger.warning("⚠️ Nenhuma aposta +EV para simular.")
+            return results
+
+        total_odds = 0.0
+        for _, row in df_ev.iterrows():
+            bet_type = "Over" if row["is_over_ev"] else "Under"
+            odds = row["over_odds"] if row["is_over_ev"] else row["under_odds"]
+            bet = {
+                "match": row.get("match_name", "Unknown"),
+                "type": bet_type,
+                "line": row["line"],
+                "odds": odds,
+                "stake": stake,
+            }
+            if "actual" in row and pd.notna(row["actual"]):
+                actual = row["actual"]
+                line = row["line"]
+                is_win = (actual > line) if bet_type == "Over" else (actual <= line)
+                bet["result"] = "WIN" if is_win else "LOSS"
+                bet_profit = (odds - 1) * stake if is_win else -stake
+                bet["profit"] = bet_profit
+
+                results["total_bets"] += 1
+                total_odds += odds
+                if is_win:
+                    results["total_wins"] += 1
+                else:
+                    results["total_losses"] += 1
+                results["total_profit"] += bet_profit
+            results["bets"].append(bet)
+
+        if results["total_bets"] > 0:
+            results["win_rate"] = results["total_wins"] / results["total_bets"]
+            total_staked = results["total_bets"] * stake
+            results["roi"] = results["total_profit"] / total_staked if total_staked else 0.0
+            results["roi_percent"] = results["roi"] * 100
+            results["avg_odds"] = total_odds / results["total_bets"]
+
+        return results
+
+    def generate_report(
+        self,
+        df_merged: pd.DataFrame,
+        betting_results: Dict,
+        output_path: Optional[str] = None,
+    ) -> str:
+        """Gera um relatório detalhado de performance."""
+        coverage = (betting_results["total_bets"] / len(df_merged) * 100) if len(df_merged) else 0.0
+        report = f"""
+╔════════════════════════════════════════════════════════════════╗
+║           RELATÓRIO DE PERFORMANCE - ODDS REAIS               ║
+╚════════════════════════════════════════════════════════════════╝
+
+📊 ESTATÍSTICAS GERAIS
+─────────────────────────────────────────────────────────────────
+Total de Partidas Analisadas:  {len(df_merged)}
+Apostas +EV Identificadas:     {betting_results['total_bets']}
+Taxa de Cobertura:             {coverage:.1f}%
+
+💰 RESULTADOS DE APOSTAS
+─────────────────────────────────────────────────────────────────
+Total de Apostas:              {betting_results['total_bets']}
+Vitórias:                      {betting_results['total_wins']}
+Derrotas:                      {betting_results['total_losses']}
+Win Rate:                      {betting_results['win_rate']:.2%}
+
+📈 RETORNO FINANCEIRO
+─────────────────────────────────────────────────────────────────
+Lucro Total:                   {betting_results['total_profit']:+.2f} unidades
+ROI (Retorno):                 {betting_results['roi']:+.2f} unidades
+ROI (%):                       {betting_results['roi_percent']:+.1f}%
+Odd Média:                     {betting_results['avg_odds']:.2f}
+"""
+        if betting_results["roi_percent"] > 15:
+            report += "\n✅ EXCELENTE! ROI acima de 15%. Modelo tem potencial lucrativo.\n"
+        elif betting_results["roi_percent"] > 5:
+            report += "\n🟡 BOM! ROI positivo. Modelo é viável com gestão de banca.\n"
+        elif betting_results["roi_percent"] > 0:
+            report += "\n🟠 MARGINAL. ROI positivo mas baixo. Requer otimização.\n"
+        else:
+            report += "\n🔴 NEGATIVO. Modelo não é lucrativo. Revisar features/parâmetros.\n"
+
+        report += f"""
+
+═════════════════════════════════════════════════════════════════
+Relatório gerado em: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+═════════════════════════════════════════════════════════════════
+"""
+        if output_path:
+            Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+            with open(output_path, "w", encoding="utf-8") as report_file:
+                report_file.write(report)
+            logger.info("✅ Relatório salvo em: %s", output_path)
+
+        return report
+
+
+async def main():
+    from src.scrapers.superbet_odds_scraper import SuperbetOddsScraper
+
+    scraper = SuperbetOddsScraper(headless=True)
+    integrator = OddsIntegrator(scraper=scraper)
+    try:
+        urls = [
+            "https://superbet.bet.br/odds/futebol/arsenal-x-wolverhampton-8627842/?t=offer-prematch-106&mdt=o",
+        ]
+        df_odds = await integrator.fetch_odds_for_matches(urls)
+        if not df_odds.empty:
+            df_odds_clean = integrator.validate_odds(df_odds)
+            predictions = np.random.uniform(8, 12, len(df_odds_clean))
+            df_merged = integrator.merge_predictions_with_odds(predictions, df_odds_clean)
+            df_ev = integrator.calculate_ev_bets(df_merged)
+            results = integrator.simulate_betting(df_ev)
+            print(integrator.generate_report(df_merged, results))
+    finally:
+        await scraper.close()
+
+
+if __name__ == "__main__":
+    asyncio.run(main())

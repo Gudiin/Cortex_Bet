@@ -22,7 +22,7 @@ from src.training.trainer import train_model
 from src.models.model_v2 import ProfessionalPredictor
 from src.data.updater import (
     update_database, update_match_by_url, update_specific_league, 
-    update_all_leagues
+    update_all_leagues, update_all_leagues_by_date_range
 )
 
 # Global args mock if needed, but we pass args to functions
@@ -312,6 +312,7 @@ def run_cli():
         print("6. Atualizar Jogo Específico (URL)")
         print(f"{Colors.CYAN}7. 📡 Scanner de Oportunidades (Dia){Colors.RESET}")
         print("9. 🚀 Atualizar TODAS as Ligas (3 Anos - Batch)")
+        print("13. 🗓️ Atualizar TODAS as Ligas por Intervalo de Datas")
         print("10. 🧹 Limpar Histórico (Remover GREEN/RED)")
         print(f"{Colors.YELLOW}11. 👤 Gerenciar Usuários{Colors.RESET}")
         print(f"{Colors.RED}12. 💣 RESET TOTAL (Zerar Apostas e Bancas){Colors.RESET}")
@@ -327,6 +328,7 @@ def run_cli():
         elif choice == '6': update_match_by_url()
         elif choice == '7': scan_opportunities()
         elif choice == '9': update_all_leagues()
+        elif choice == '13': update_all_leagues_by_date_range()
         elif choice == '10':
             db = DBManager()
             db.clear_finished_predictions()

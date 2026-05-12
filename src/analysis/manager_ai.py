@@ -20,6 +20,7 @@ from src.domain.models import PredictionResult
 from src.features.feature_store import FeatureStore
 from src.models.model_v2 import ProfessionalPredictor
 from src.models.neural_engine import NeuralChallenger
+from src.models.joint_corners_model import JointCornersModel
 from src.models.model_registry import ModelRegistry
 from src.analysis.statistical import StatisticalAnalyzer
 from src.ml.calibration import MultiThresholdCalibrator
@@ -37,6 +38,8 @@ class ManagerAI:
         self.feature_store = FeatureStore(db_manager)
         self.ensemble = ProfessionalPredictor()
         self.neural = NeuralChallenger()
+        self.joint = JointCornersModel()
+        self.joint_ready = self.joint.load()
         self.statistical = StatisticalAnalyzer()
         
         # 2. Load Models
@@ -105,6 +108,12 @@ class ManagerAI:
 
     def _model_total_from_id(self, model_id: str, features_vector: pd.DataFrame) -> float:
         """Return total corner expectation for a model ID using configurable runtime adapters."""
+        # Joint-only operational override: when joint model is available,
+        # it becomes the single source for total expectation.
+        if self.joint_ready:
+            _, _, total = self.joint.predict_totals(features_vector)
+            return float(total[0])
+
         adapter = None
         if self.registry is not None:
             try:
