@@ -7,12 +7,28 @@ interface StatusData {
   last_updated: string;
   live_matches: number;
 }
+interface OpsStatus {
+  last_training_at?: string;
+  last_training_pid?: number;
+  last_scanner_at?: string;
+  last_scanner_action?: string;
+  last_scanner_pid?: number;
+  last_update_at?: string;
+  last_update_range?: string;
+  last_update_pid?: number;
+}
 
 export default function SystemStatus() {
   const [data, setData] = useState<StatusData | null>(null);
   const [scannerActive, setScannerActive] = useState(false);
   const [loading, setLoading] = useState(true);
   const [toggling, setToggling] = useState(false);
+  const [training, setTraining] = useState(false);
+  const [updating, setUpdating] = useState(false);
+  const [startDate, setStartDate] = useState('');
+  const [endDate, setEndDate] = useState('');
+  const [opsStatus, setOpsStatus] = useState<OpsStatus | null>(null);
+  const [feedback, setFeedback] = useState<string>('');
 
   const fetchStatus = async () => {
     try {
@@ -30,10 +46,34 @@ export default function SystemStatus() {
          setScannerActive(procJson.active);
       }
 
+      const opsRes = await fetch('/api/ops-status');
+      if (opsRes.ok) {
+        const opsJson = await opsRes.json();
+        setOpsStatus(opsJson);
+      }
+
     } catch (error) {
       console.error('Status fetch error:', error);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const triggerTraining = async () => {
+    setTraining(true);
+    try {
+      const res = await fetch('/api/training/control', { method: 'POST' });
+      if (!res.ok) {
+        const payload = await res.json().catch(() => ({}));
+        throw new Error(payload?.error || 'Falha ao iniciar treino');
+      }
+      const payload = await res.json();
+      setFeedback(`✅ Treino iniciado (PID ${payload?.pid ?? '-'})`);
+      setTimeout(fetchStatus, 800);
+    } catch (error) {
+      console.error('Training trigger error:', error);
+    } finally {
+      setTraining(false);
     }
   };
 
@@ -53,11 +93,38 @@ export default function SystemStatus() {
         // Let's check immediately
         setTimeout(fetchStatus, 1000); 
         setScannerActive(action === 'start');
+        setFeedback(`✅ Scanner ${action === 'start' ? 'iniciado' : 'parado'}${json?.pid ? ` (PID ${json.pid})` : ''}`);
       }
     } catch (error) {
       console.error('Toggle error:', error);
     } finally {
       setToggling(false);
+    }
+  };
+
+  const triggerDateRangeUpdate = async () => {
+    if (!startDate || !endDate) {
+      console.error('Selecione data inicial e final');
+      return;
+    }
+    setUpdating(true);
+    try {
+      const res = await fetch('/api/update/all-leagues/date-range', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ start_date: startDate, end_date: endDate }),
+      });
+      if (!res.ok) {
+        const payload = await res.json().catch(() => ({}));
+        throw new Error(payload?.error || 'Falha ao iniciar atualização por intervalo');
+      }
+      const payload = await res.json();
+      setFeedback(`✅ Atualização iniciada (PID ${payload?.pid ?? '-'})`);
+      setTimeout(fetchStatus, 800);
+    } catch (error) {
+      console.error('Date-range update error:', error);
+    } finally {
+      setUpdating(false);
     }
   };
 
@@ -110,6 +177,40 @@ export default function SystemStatus() {
         </button>
       </div>
 
+      <button
+        onClick={triggerTraining}
+        disabled={training}
+        className="px-3 py-1.5 text-[10px] uppercase font-bold tracking-wide rounded-full border border-violet-500/30 bg-violet-500/10 text-violet-300 hover:bg-violet-500/20 disabled:opacity-50"
+        title="Executa o treino do modelo (equivalente à opção 2 do CLI)"
+      >
+        {training ? 'Treinando...' : 'Treinar IA'}
+      </button>
+
+      <div className="flex items-center gap-2 bg-slate-900/50 px-2 py-1 rounded-full border border-slate-800">
+        <input
+          type="date"
+          value={startDate}
+          onChange={(e) => setStartDate(e.target.value)}
+          className="bg-slate-800 text-slate-200 text-[10px] rounded px-1 py-0.5 border border-slate-700"
+          title="Data inicial"
+        />
+        <input
+          type="date"
+          value={endDate}
+          onChange={(e) => setEndDate(e.target.value)}
+          className="bg-slate-800 text-slate-200 text-[10px] rounded px-1 py-0.5 border border-slate-700"
+          title="Data final"
+        />
+        <button
+          onClick={triggerDateRangeUpdate}
+          disabled={updating}
+          className="px-2 py-1 text-[10px] uppercase font-bold rounded-full border border-emerald-500/30 bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20 disabled:opacity-50"
+          title="Atualizar todas as ligas por intervalo de datas"
+        >
+          {updating ? 'Atualizando...' : 'Atualizar Ligas'}
+        </button>
+      </div>
+
       {/* System Status Indicator */}
       <div className="flex items-center gap-3 px-3 py-1.5 bg-slate-900/50 rounded-full border border-slate-800">
         <div className="relative flex h-2.5 w-2.5">
@@ -131,6 +232,12 @@ export default function SystemStatus() {
             {data.live_matches} LIVE
           </div>
         )}
+      </div>
+      <div className="flex flex-col gap-1 text-[10px] text-slate-400 bg-slate-900/40 border border-slate-800 rounded-lg px-2 py-1">
+        <span>Últ. treino: {opsStatus?.last_training_at ? new Date(opsStatus.last_training_at).toLocaleString() : 'N/A'}</span>
+        <span>Últ. scanner: {opsStatus?.last_scanner_at ? `${opsStatus.last_scanner_action || ''} em ${new Date(opsStatus.last_scanner_at).toLocaleString()}` : 'N/A'}</span>
+        <span>Últ. atualização: {opsStatus?.last_update_at ? `${opsStatus.last_update_range || ''} em ${new Date(opsStatus.last_update_at).toLocaleString()}` : 'N/A'}</span>
+        {feedback && <span className="text-emerald-300">{feedback}</span>}
       </div>
     </div>
   );
