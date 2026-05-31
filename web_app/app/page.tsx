@@ -13,6 +13,8 @@ import TopOpportunitiesList from '../components/TopOpportunitiesList';
 import ScannerControls from '../components/ScannerControls';
 import Login from '../components/Login';
 import Leaderboard from '../components/Leaderboard';
+import AITraining from '../components/AITraining';
+import AutoValidator from '../components/AutoValidator';
 
 interface FilterState {
   date: string;
@@ -29,7 +31,7 @@ interface User {
 
 export default function Dashboard() {
   const [user, setUser] = useState<User | null>(null);
-  const [activeTab, setActiveTab] = useState<'scanner' | 'performance' | 'bankroll' | 'league'>('scanner');
+  const [activeTab, setActiveTab] = useState<'scanner' | 'performance' | 'bankroll' | 'league' | 'training'>('scanner');
   const [filters, setFilters] = useState<FilterState>({
     date: 'today',
     league: 'all',
@@ -193,6 +195,16 @@ export default function Dashboard() {
             >
               Tipster League
             </button>
+            <button
+              onClick={() => setActiveTab('training')}
+              className={`px-3 lg:px-4 py-2 text-xs lg:text-sm font-medium rounded-md transition-all whitespace-nowrap flex items-center gap-1.5 ${
+                activeTab === 'training' 
+                  ? 'bg-purple-600 text-white shadow-lg shadow-purple-900/30' 
+                  : 'text-slate-400 hover:text-white hover:bg-slate-800'
+              }`}
+            >
+              🧬 IA Training
+            </button>
           </nav>
         </div>
       </header>
@@ -249,10 +261,19 @@ export default function Dashboard() {
             <Leaderboard />
           </div>
         )}
+
+        {activeTab === 'training' && (
+          <div className="animate-in fade-in duration-500">
+            <AITraining />
+          </div>
+        )}
       </main>
 
       {/* Betting Slip Sidebar */}
       <BettingSlip />
+
+      {/* Auto-validates predictions (GREEN/RED) and user bets every 5 min */}
+      <AutoValidator />
     </div>
   );
 }

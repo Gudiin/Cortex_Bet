@@ -220,6 +220,8 @@ class MatchRepository:
 
         Regra de Negócio:
             Identifica jogos que precisam de monitoramento ou atualização de status.
+            Para "Todos os pendentes (histórico)", retorna jogos finalizados que ainda têm
+            predições em aberto (GREEN/RED/PENDING), sem limite de tempo.
         """
         conn = self._db.connect()
         cursor = conn.cursor()
@@ -228,16 +230,20 @@ class MatchRepository:
         now = int(time.time())
 
         query = '''
-            SELECT match_id, home_team_name, away_team_name, status, start_timestamp
-            FROM matches 
-            WHERE (status = 'scheduled' AND start_timestamp < ?)
-               OR (status = 'inprogress')
-               OR (status = 'notstarted' AND start_timestamp < ?)
-               OR (status = 'finished' AND start_timestamp > ? - 10800)
-            ORDER BY start_timestamp ASC
+            SELECT DISTINCT m.match_id, m.home_team_name, m.away_team_name, m.status, m.start_timestamp
+            FROM matches m
+            WHERE (m.status = 'scheduled' AND m.start_timestamp < ?)
+               OR (m.status = 'inprogress')
+               OR (m.status = 'notstarted' AND m.start_timestamp < ?)
+               OR (m.status = 'finished' AND EXISTS (
+                    SELECT 1 FROM predictions p 
+                    WHERE p.match_id = m.match_id 
+                    AND (p.status = 'PENDING' OR p.status IS NULL)
+               ))
+            ORDER BY m.start_timestamp ASC
         '''
 
-        cursor.execute(query, (now, now, now))
+        cursor.execute(query, (now, now))
         rows = cursor.fetchall()
 
         matches = []

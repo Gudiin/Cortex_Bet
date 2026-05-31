@@ -401,28 +401,20 @@ def update_pending_by_date() -> None:
         # 1. Buscar jogos pendentes
         if target_date:
             print(f"\n🔍 Buscando jogos pendentes para {target_date}...")
-            query = """
-                SELECT match_id, home_team_name, away_team_name, status, start_timestamp 
-                FROM matches 
-                WHERE DATE(datetime(start_timestamp, 'unixepoch', '-3 hours')) = ?
-            """
-            cursor.execute(query, (target_date,))
+            pending_matches = db.get_pending_matches()
+            brt = timezone(timedelta(hours=-3))
+            matches_to_update = [
+                match for match in pending_matches
+                if datetime.fromtimestamp(match['start_timestamp'], timezone.utc).astimezone(brt).strftime('%Y-%m-%d') == target_date
+            ]
         else:
             print(f"\n🔍 Buscando TODOS os jogos pendentes...")
-            now_ts = int(datetime.now().timestamp())
-            query = """
-                SELECT match_id, home_team_name, away_team_name, status, start_timestamp 
-                FROM matches 
-                WHERE status != 'finished' AND start_timestamp < ?
-            """
-            cursor.execute(query, (now_ts,))
-        
-        matches_to_update = cursor.fetchall()
+            matches_to_update = db.get_pending_matches()
         
         if not matches_to_update:
             print("✅ Nenhum jogo pendente encontrado.")
             return
-        
+
         print(f"📊 Encontrados {len(matches_to_update)} jogos para atualizar.")
         
         scraper.start()
@@ -430,7 +422,14 @@ def update_pending_by_date() -> None:
         stats_updated = 0
         
         for match in matches_to_update:
-            match_id, home, away, current_status, start_ts = match
+            if target_date:
+                match_id, home, away, current_status, start_ts = match
+            else:
+                match_id = match['match_id']
+                home = match['home_team']
+                away = match['away_team']
+                current_status = match['status']
+                start_ts = match['start_timestamp']
             print(f"\n🔄 [{match_id}] {home} vs {away} [{current_status}]")
             
             # A. Buscar detalhes atualizados

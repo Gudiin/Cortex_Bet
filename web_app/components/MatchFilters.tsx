@@ -67,9 +67,17 @@ export default function MatchFilters({ filters, onFilterChange, totalMatches }: 
                   type="date"
                   value={
                     filters.date === 'today'
-                      ? (() => { const d = new Date(); d.setMinutes(d.getMinutes() - d.getTimezoneOffset()); return d.toISOString().split('T')[0]; })()
+                      ? (() => { 
+                          const d = new Date(); 
+                          const brt = new Date(d.getTime() - 3 * 60 * 60 * 1000); 
+                          return brt.toISOString().split('T')[0]; 
+                        })()
                       : filters.date === 'tomorrow'
-                        ? (() => { const d = new Date(); d.setDate(d.getDate() + 1); d.setMinutes(d.getMinutes() - d.getTimezoneOffset()); return d.toISOString().split('T')[0]; })()
+                        ? (() => { 
+                            const d = new Date(); 
+                            const brt = new Date(d.getTime() - 3 * 60 * 60 * 1000 + 24 * 60 * 60 * 1000); 
+                            return brt.toISOString().split('T')[0]; 
+                          })()
                         : filters.date
                   }
                   onChange={(e) => updateFilter('date', e.target.value)}

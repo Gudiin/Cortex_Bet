@@ -5,7 +5,7 @@ Connects to real SQLite database and returns predictions with AI reasoning.
 
 import sys
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 # Add project root to path
@@ -54,12 +54,13 @@ class DashboardDataProvider:
         # Parse date
         # Parse date
         if date_str == 'today':
-            # Force UTC-3 calculation (Server might be UTC)
-            # 01:00 UTC (next day) should be 22:00 UTC-3 (current day)
-            now_br = datetime.now() - timedelta(hours=3)
+            # Use Brazil timezone (UTC-3) explicitly
+            brt = timezone(timedelta(hours=-3))
+            now_br = datetime.now(tz=brt)
             target_date = now_br.strftime('%Y-%m-%d')
         elif date_str == 'tomorrow':
-            now_br = datetime.now() - timedelta(hours=3)
+            brt = timezone(timedelta(hours=-3))
+            now_br = datetime.now(tz=brt)
             target_date = (now_br + timedelta(days=1)).strftime('%Y-%m-%d')
         else:
             target_date = date_str
@@ -121,7 +122,7 @@ class DashboardDataProvider:
                 'serie_a': 'Serie A',
                 'bundesliga': 'Bundesliga',
                 'ligue1': 'Ligue 1',
-                'brasileirao_a': 'Brasileirão Série A',
+                'brasileirao_a': 'Brasileirão Betano',
                 'brasileirao_b': 'Brasileirão Série B'
             }
             mapped_league = league_map.get(league, league)
@@ -158,7 +159,7 @@ class DashboardDataProvider:
             match_id = int(row[1])
             if match_id not in matches_dict:
                 # Get AI reasoning for this match
-                reasoning = self._get_ai_reasoning(match_id, row[8], row[9])
+                reasoning = self._get_ai_reasoning(cursor, match_id, row[8], row[9])
                 
                 # Calculate live stats
                 live_stats = None
@@ -395,12 +396,14 @@ class DashboardDataProvider:
         
         return matches
     
-    def _get_ai_reasoning(self, match_id, home_team, away_team):
-        """Get AI reasoning data for a match"""
-        conn = self.db.connect()
-        cursor = conn.cursor()
+    def _get_ai_reasoning(self, cursor, match_id, home_team, away_team):
+        """Get AI reasoning data for a match.
         
+        Receives the existing cursor to avoid opening a second DB connection,
+        which was causing Recent Form data to be inconsistent with scanner data.
+        """
         # Get recent form for both teams (Specific and Overall)
+        # Re-use the same cursor from the parent query so data is consistent.
         home_recent = self._get_recent_form(cursor, home_team, 'home')
         away_recent = self._get_recent_form(cursor, away_team, 'away')
         home_overall = self._get_recent_form(cursor, home_team, 'all')
@@ -436,66 +439,12 @@ class DashboardDataProvider:
         }
     
     def _get_recent_form(self, cursor, team_name, home_or_away):
-        """Get recent 5 games for a team"""
-        if home_or_away == 'all':
-            query = """
-                SELECT s.corners_home_ft, s.corners_away_ft, m.home_team_name
-                FROM matches m
-                JOIN match_stats s ON m.match_id = s.match_id
-                WHERE (m.home_team_name = ? OR m.away_team_name = ?)
-                  AND m.status = 'finished'
-                ORDER BY m.start_timestamp DESC
-                LIMIT 5
-            """
-            cursor.execute(query, [team_name, team_name])
-            rows = cursor.fetchall()
-            
-            games = []
-            for row in rows:
-                # If team was home, take home corners, else away corners
-                # row[2] is home_team_name
-                is_home = (row[2] == team_name)
-                games.append(row[0] if is_home else row[1])
-        else:
-            query = """
-                SELECT s.corners_home_ft, s.corners_away_ft
-                FROM matches m
-                JOIN match_stats s ON m.match_id = s.match_id
-                WHERE (m.home_team_name = ? OR m.away_team_name = ?)
-                  AND m.status = 'finished'
-                ORDER BY m.start_timestamp DESC
-                LIMIT 5
-            """
-            cursor.execute(query, [team_name, team_name])
-            rows = cursor.fetchall()
-            
-            games = []
-            for row in rows:
-                # Determine if team was home or away to filter specifically
-                # This logic in original code was slightly flawed if query returns both, 
-                # but we'll stick to 'all' logic for now or refine.
-                # Actually, original code appended based on 'home_or_away' arg passed to function
-                # which implies we filter the *matches* where they were home/away?
-                # The original query selects WHERE home OR away, so it gets all matches.
-                # Then it blindly took row[0] (home corners) if home_or_away=='home'. 
-                # This is only correct if the query ONLY returned home games.
-                # BUT the query has "WHERE (home=? OR away=?)", so it returns ALL games.
-                # So if home_or_away='home', it takes home corners of AWAY games too? That's a bug in previous code.
-                # Let's fix it properly for 'all', 'home', 'away'.
-                pass
-            
-            # Re-implementing correctly:
-            games = []
-            for row in rows:
-                 # We need to know if they were home or away in this specific match row
-                 # But the original query didn't select team names.
-                 # Let's just implement the 'all' branch cleanly and patch the 'home/away' calls to use the better query.
-                 pass
-
-        # corrected implementation with HT/ST data and variance
-        query = ""
-        params = []
+        """Get recent 5 games for a team.
         
+        Uses the shared cursor (same DB connection) to ensure data consistency.
+        Selects home_team_name in all branches so is_home_team detection works
+        correctly for both specific (home/away) and overall ('all') queries.
+        """
         if home_or_away == 'home':
             query = """
                 SELECT s.corners_home_ft, s.corners_away_ft, m.home_team_name,
@@ -520,7 +469,7 @@ class DashboardDataProvider:
                 LIMIT 5
             """
             params = [team_name]
-        else: # 'all'
+        else:  # 'all' — both home and away games
             query = """
                 SELECT s.corners_home_ft, s.corners_away_ft, m.home_team_name,
                        s.corners_home_ht, s.corners_away_ht
@@ -724,7 +673,7 @@ class DashboardDataProvider:
                 'status': 'online',
                 'last_updated': last_updated,
                 'live_matches': live_count,
-                'system_time': (datetime.now() - timedelta(hours=3)).strftime('%Y-%m-%d %H:%M:%S')
+                'system_time': datetime.now(tz=timezone(timedelta(hours=-3))).strftime('%Y-%m-%d %H:%M:%S')
             }
         except Exception as e:
             return {

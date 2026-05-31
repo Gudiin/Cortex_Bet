@@ -1,0 +1,17 @@
+{
+  "status": "success",
+  "last_trained_at": "2026-05-29T21:40:35.837181-03:00",
+  "last_started_at": "2026-05-29T21:39:43.887283-03:00",
+  "oof_metrics": {
+    "home_1H": 1.4402,
+    "away_1H": 1.2709,
+    "home_2H": 1.601,
+    "away_2H": 1.4254
+  },
+  "config": {
+    "n_splits": 5,
+    "random_state": 42,
+    "n_simulations": 10000
+  },
+  "last_scanner_run": "2026-05-31T00:40:44.792816-03:00"
+}

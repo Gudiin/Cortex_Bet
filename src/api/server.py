@@ -1,9 +1,12 @@
 import asyncio
+import json
 import os
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import subprocess
 import sys
-from typing import Any, Dict
+import threading
+from typing import Any, Dict, Optional
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -35,6 +38,10 @@ from contextlib import asynccontextmanager
 
 # Global Provider Instance
 provider = None
+
+# Training state
+_training_in_progress = False
+_training_lock = threading.Lock()
 
 
 class AuthRequest(BaseModel):
@@ -75,6 +82,172 @@ def _open_db_cursor() -> tuple[DBManager, Any, Any]:
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 SCANNER_PID_FILE = PROJECT_ROOT / "web_app" / ".scanner.pid"
 SCANNER_SCRIPT = PROJECT_ROOT / "scripts" / "quick_scan.py"
+TRAINING_LOG_FILE = PROJECT_ROOT / "data" / "training_log.json"
+
+
+# ---------------------------------------------------------------------------
+# Training log helpers
+# ---------------------------------------------------------------------------
+
+def _read_training_log() -> dict:
+    """Load training log from JSON file; return empty dict if missing."""
+    try:
+        if TRAINING_LOG_FILE.exists():
+            return json.loads(TRAINING_LOG_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    return {}
+
+
+def _write_training_log(data: dict) -> None:
+    """Persist training log dict to JSON file."""
+    TRAINING_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+    TRAINING_LOG_FILE.write_text(
+        json.dumps(data, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+
+def _run_joint_training_sync() -> dict:
+    """Run JointTrainer with default params (no interactive input).
+    
+    Called from a background thread so the API remains responsive.
+    Returns a summary dict saved to the training log.
+    """
+    global _training_in_progress
+    brt = timezone(timedelta(hours=-3))
+    started_at = datetime.now(tz=brt).isoformat()
+    result = {"started_at": started_at, "status": "running"}
+    _write_training_log({**_read_training_log(), **result, "last_started_at": started_at})
+
+    try:
+        from src.database.db_manager import DBManager as _DBManager
+        from src.features.feature_store import FeatureStore
+        from src.training.joint_trainer import JointTrainer
+
+        db = _DBManager()
+        try:
+            df_history = db.get_historical_data()
+            if df_history is None or len(df_history) < 200:
+                result["status"] = "error"
+                result["error"] = "Histórico insuficiente (< 200 jogos)"
+                return result
+
+            feature_store = FeatureStore(db)
+            trainer = JointTrainer(n_splits=5, n_simulations=10_000, random_state=42)
+            report = trainer.run(df_history, feature_store)
+
+            finished_at = datetime.now(tz=brt).isoformat()
+            oof = report.get("oof_metrics", {})
+            result = {
+                "status": "success",
+                "last_trained_at": finished_at,
+                "last_started_at": started_at,
+                "oof_metrics": {
+                    k: round(v, 4) if isinstance(v, float) else v
+                    for k, v in oof.items()
+                },
+                "config": {"n_splits": 5, "random_state": 42, "n_simulations": 10_000},
+            }
+        finally:
+            db.close()
+    except Exception as exc:
+        result["status"] = "error"
+        result["error"] = str(exc)
+    finally:
+        _write_training_log(result)
+        with _training_lock:
+            _training_in_progress = False
+
+    return result
+
+
+async def _auto_scheduler_loop() -> None:
+    """Background coroutine: runs scanner daily + retrains AI every 15 days."""
+    brt = timezone(timedelta(hours=-3))
+    print("🕐 Auto-scheduler started (daily scanner + 15-day AI retrain)")
+
+    while True:
+        try:
+            now = datetime.now(tz=brt)
+            log = _read_training_log()
+
+            # ── Daily scanner ──────────────────────────────────────────────
+            last_scan_str = log.get("last_scanner_run")
+            should_scan = True
+            if last_scan_str:
+                try:
+                    last_scan_dt = datetime.fromisoformat(last_scan_str)
+                    # Run scanner once per calendar day (BRT)
+                    if last_scan_dt.date() >= now.date():
+                        should_scan = False
+                except Exception:
+                    pass
+
+            if should_scan:
+                print(f"📡 Auto-scanner: running for {now.strftime('%Y-%m-%d')}...")
+                try:
+                    db = DBManager()
+                    try:
+                        results = await asyncio.to_thread(
+                            scan_opportunities_core,
+                            date_str=now.strftime("%Y-%m-%d"),
+                            db=db,
+                            manager=None,
+                            verbose=False,
+                        )
+                        processed = len(results or [])
+                        print(f"📡 Auto-scanner: {processed} matches processed.")
+                    finally:
+                        db.close()
+
+                    log = _read_training_log()
+                    log["last_scanner_run"] = now.isoformat()
+                    _write_training_log(log)
+
+                    # Validate finished predictions after auto-scan
+                    try:
+                        db2 = DBManager()
+                        try:
+                            await asyncio.to_thread(db2.check_predictions)
+                            print("📡 Auto-scanner: predictions validated (GREEN/RED).")
+                        finally:
+                            db2.close()
+                    except Exception as val_exc:
+                        print(f"📡 Auto-scanner: validation error: {val_exc}")
+                except Exception as exc:
+                    print(f"📡 Auto-scanner error: {exc}")
+
+            # ── 15-day AI retrain ──────────────────────────────────────────
+            global _training_in_progress
+            last_train_str = log.get("last_trained_at")
+            should_retrain = False
+            if not last_train_str:
+                # Never trained — schedule after 1 day to avoid immediate heavy load at startup
+                should_retrain = False
+            else:
+                try:
+                    last_train_dt = datetime.fromisoformat(last_train_str)
+                    days_since = (now - last_train_dt).days
+                    if days_since >= 15:
+                        should_retrain = True
+                except Exception:
+                    pass
+
+            if should_retrain:
+                with _training_lock:
+                    if not _training_in_progress:
+                        _training_in_progress = True
+                        print("🧬 Auto-retrain: 15-day interval reached — starting training in background...")
+                        threading.Thread(
+                            target=_run_joint_training_sync, daemon=True
+                        ).start()
+
+        except Exception as exc:
+            print(f"⚠️ Auto-scheduler error: {exc}")
+
+        # Check every hour
+        await asyncio.sleep(3600)
 
 
 def _is_pid_running(pid: int) -> bool:
@@ -183,9 +356,18 @@ async def lifespan(app: FastAPI):
         print(f"Failed to initialize provider: {e}")
         import traceback
         traceback.print_exc()
+
+    # Start the background auto-scheduler
+    scheduler_task = asyncio.create_task(_auto_scheduler_loop())
     
     yield
-    # Cleanup code can go here if needed
+
+    # Cleanup: cancel the scheduler
+    scheduler_task.cancel()
+    try:
+        await scheduler_task
+    except asyncio.CancelledError:
+        pass
 
 app = FastAPI(title="Cortex Bet API", version="1.0.0", lifespan=lifespan)
 
@@ -370,6 +552,12 @@ async def run_scanner(request: ScannerRunRequest) -> Dict[str, Any]:
         )
         processed = len(results or [])
 
+        # Automatically validate finished predictions after scanning
+        try:
+            await asyncio.to_thread(db.check_predictions)
+        except Exception as val_exc:
+            print(f"⚠️ check_predictions after scan error: {val_exc}")
+
         return {
             "success": True,
             "message": "Scanner completed successfully",
@@ -445,6 +633,84 @@ async def post_validate_bets() -> Dict[str, Any]:
         }
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post("/api/validate-predictions")
+async def post_validate_predictions() -> Dict[str, Any]:
+    """Run check_predictions() to mark finished match predictions as GREEN/RED."""
+    db = DBManager()
+    try:
+        await asyncio.to_thread(db.check_predictions)
+        return {
+            "success": True,
+            "message": "Predictions validated (GREEN/RED updated).",
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    finally:
+        db.close()
+
+
+@app.get("/api/training/status")
+async def get_training_status() -> Dict[str, Any]:
+    """Return last training timestamp, metrics, and whether training is running."""
+    log = _read_training_log()
+    brt = timezone(timedelta(hours=-3))
+    now = datetime.now(tz=brt)
+
+    next_retrain = None
+    last_train_str = log.get("last_trained_at")
+    if last_train_str:
+        try:
+            last_train_dt = datetime.fromisoformat(last_train_str)
+            next_dt = last_train_dt + timedelta(days=15)
+            days_left = max(0, (next_dt.date() - now.date()).days)
+            next_retrain = {
+                "date": next_dt.strftime("%Y-%m-%d"),
+                "days_left": days_left,
+            }
+        except Exception:
+            pass
+
+    # Check if model files exist
+    models_dir = PROJECT_ROOT / "models"
+    model_files = [
+        f.name for f in models_dir.glob("*.joblib")
+    ] if models_dir.exists() else []
+
+    return {
+        "last_trained_at": log.get("last_trained_at"),
+        "last_started_at": log.get("last_started_at"),
+        "last_scanner_run": log.get("last_scanner_run"),
+        "status": log.get("status", "never_trained"),
+        "oof_metrics": log.get("oof_metrics", {}),
+        "config": log.get("config", {}),
+        "training_in_progress": _training_in_progress,
+        "next_auto_retrain": next_retrain,
+        "model_files": model_files,
+    }
+
+
+@app.post("/api/training/run")
+async def post_training_run() -> Dict[str, Any]:
+    """Trigger joint model training in a background thread (non-blocking)."""
+    global _training_in_progress
+    with _training_lock:
+        if _training_in_progress:
+            return {
+                "success": False,
+                "message": "Treino já em andamento. Aguarde a conclusão.",
+                "training_in_progress": True,
+            }
+        _training_in_progress = True
+
+    threading.Thread(target=_run_joint_training_sync, daemon=True).start()
+    return {
+        "success": True,
+        "message": "Treino iniciado em background. Verifique o status em /api/training/status.",
+        "training_in_progress": True,
+    }
+
 
 if __name__ == "__main__":
     # Run slightly different config for direct execution
